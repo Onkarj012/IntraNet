@@ -1,0 +1,570 @@
+# IntradayNet — Dedicated Intraday Model Architecture Plan
+
+> **Status**: Research & Design (not yet implemented)
+> **Data**: 499 stocks × 1-minute bars × 2015–2026 (~100K bars/stock/year)
+> **Goal**: Best possible intraday prediction system for Indian equities
+
+---
+
+## 1. Why a Separate Intraday Model?
+
+The current StockXpert model was designed for **daily-scale** predictions. For intraday trading, it has fundamental mismatches:
+
+| Dimension | Daily Model (StockXpert) | Intraday Model (Proposed) |
+|-----------|--------------------------|---------------------------|
+| **Input granularity** | Daily OHLCV (1 bar/day) | 1-minute OHLCV (375 bars/day) |
+| **Prediction horizons** | 1-10 days | 15min / 30min / 60min / EOD |
+| **Feature timescale** | RSI-14 (14 days), SMA-50 (50 days) | RSI-14 (14 minutes), EMA-9 (9 minutes) |
+| **Key patterns** | Multi-day trends, breakouts | ORB, VWAP cross, momentum bursts |
+| **Session awareness** | None | Time-of-day matters enormously |
+| **Training samples** | ~2,500 per stock (10 yrs daily) | ~900,000 per stock (10 yrs × ~375 bars/day) |
+| **Sentiment horizon** | Overnight + multi-day | Pre-market + intraday headlines |
+
+The massive difference in **data volume** (375x more bars) and **temporal dynamics** (sub-hour patterns) means we need a purpose-built architecture.
+
+---
+
+## 2. Data Available
+
+### 2.1 Price Data
+- **499 stocks** × 1-minute OHLCV bars
+- **Coverage**: ~2015 to Jan 2026 (~11 years)
+- **Per file**: 30-55 MB CSV (~800K–1.2M rows per stock)
+- **Columns**: Date, Open, High, Low, Close, Volume
+- **Total**: ~400M+ minute bars across all stocks
+
+### 2.2 Sentiment Data
+- [combined_sentiment_2015_2025.csv](file:///Users/onkarj012/Projects/major_pro/trial/data/sentiment/combined_sentiment_2015_2025.csv) — 10 years of daily sentiment scores for Nifty 50 stocks
+- [google_news_sentiment_2025.csv](file:///Users/onkarj012/Projects/major_pro/trial/data/sentiment/google_news_sentiment_2025.csv) — 2025 Google News headlines with VADER sentiment
+- Existing sentiment features: `sentiment_mean`, `sentiment_count`, `sentiment_std`, `sentiment_rolling_5/10/21d`, `sentiment_momentum`, `sentiment_spike`
+- **FinBERT pipeline** ([mdata/finbert.py](file:///Users/onkarj012/Projects/major_pro/trial/src/stockxpert/mdata/finbert.py)) — HuggingFace financial sentiment model
+- **GDELT** ([mdata/gdelt.py](file:///Users/onkarj012/Projects/major_pro/trial/src/stockxpert/mdata/gdelt.py)) — Global event monitoring with stock-specific queries
+- **Yahoo Finance News** ([mdata/yf_news.py](file:///Users/onkarj012/Projects/major_pro/trial/src/stockxpert/mdata/yf_news.py)) — Real-time headline fetcher
+
+### 2.3 Index Data
+- NIFTY 50, 100, 200, 500, Bank NIFTY, Sector indices — 1-minute bars
+- Can be used as market context features
+
+---
+
+## 3. Candidate Architectures
+
+We evaluate **6 architectures** across 8 dimensions. Each is scored 1-5 (5 = best).
+
+### 3.1 Architecture Overview Table
+
+| # | Architecture | Core Idea | Params (est.) | Training Speed |
+|---|-------------|-----------|---------------|----------------|
+| A | **TCN + Attention** | Dilated causal convolutions + 1 attention layer | ~500K | ⚡ Fast |
+| B | **Temporal Fusion Transformer (TFT)** | Google's TFT with variable selection + interpretable attention | ~2M | 🐢 Slow |
+| C | **CNN-BiLSTM Hybrid** | CNN feature extraction → BiLSTM sequence modeling | ~1M | 🏃 Medium |
+| D | **Pure Transformer** | Self-attention encoder with positional encoding | ~1.5M | 🐢 Slow |
+| E | **WaveNet-style** | Stacked dilated causal convolutions with skip connections | ~800K | ⚡ Fast |
+| F | **Mamba (State Space Model)** | Linear-time sequence model with selective state spaces | ~600K | ⚡ Fast |
+
+---
+
+### A. TCN + Attention
+
+```
+Minute Bars → [TCN: 5 dilated conv blocks] → [1-layer MHA] → [Context MLP] → Heads
+
+TCN blocks: Conv1D kernels with dilation rates 1, 2, 4, 8, 16
+Receptive field: ~124 bars (~2 hours of trading)
+Attention: 1 layer of 4-head self-attention for session-spanning patterns
+```
+
+**Strengths**:
+- Extremely fast training (fully parallelizable, no sequential ops)
+- Stable gradients (no vanishing gradient even for 375-bar sequences)
+- Adjustable receptive field via dilation — can reach any lookback
+- Low memory footprint compared to Transformer
+
+**Weaknesses**:
+- Fixed receptive field (can't dynamically attend to distant bars)
+- Less expressive than Transformer for very complex temporal patterns
+- Single attention layer may miss multi-level dependencies
+
+**Best for**: High-frequency data where speed matters and patterns are somewhat local (< 2 hours)
+
+---
+
+### B. Temporal Fusion Transformer (TFT)
+
+```
+                    ┌─ Known Future: time-of-day, minutes-to-close
+Minute Bars ────────┤
+                    ├─ Observed Past: OHLCV, indicators
+                    └─ Static: stock_id, sector, avg_volatility
+
+    → Variable Selection Network (learns which features matter)
+    → LSTM Encoder (past) + LSTM Decoder (future known inputs)
+    → Interpretable Multi-Head Attention
+    → Gated Residual Network → Quantile Outputs
+```
+
+**Strengths**:
+- **Interpretable**: Variable importance scores tell you WHICH features drive predictions
+- **Variable selection**: Automatically learns to ignore noisy features
+- **Handles known future inputs**: Time-of-day, minutes-to-close, scheduled events
+- **Quantile outputs**: Built-in uncertainty estimation (predict P10, P50, P90)
+- **Published research**: Google Research paper with strong time-series results
+
+**Weaknesses**:
+- **Complex**: 2M+ parameters, longer training time
+- **Memory heavy**: LSTM encoder over 375 bars uses significant memory
+- **Overfitting risk**: With high capacity comes high overfitting risk on noisy data
+- **Slower inference**: LSTM encoder is sequential, can't fully parallelize
+
+**Best for**: When interpretability matters and compute budget is larger
+
+---
+
+### C. CNN-BiLSTM Hybrid
+
+```
+Minute Bars → [Multi-scale CNN extractor] → [2-layer BiLSTM] → [Attention Pool] → Heads
+
+CNN stage:
+  Branch 1: Conv1D(kernel=3)  — 3-minute patterns (tick noise)
+  Branch 2: Conv1D(kernel=15) — 15-minute patterns (ORB window)
+  Branch 3: Conv1D(kernel=60) — 1-hour patterns (session segments)
+  → Concatenate → Downsample (stride-2 pool)
+
+BiLSTM stage:
+  2-layer BiLSTM on CNN output (~187 timesteps after pooling)
+  → Attention-weighted mean pooling
+```
+
+**Strengths**:
+- CNN extracts local patterns (candlestick formations, volume spikes) efficiently
+- BiLSTM captures sequential dependencies between CNN-extracted features
+- Multi-scale CNN branches match natural intraday timescales (3m, 15m, 1hr)
+- Proven architecture in financial time series literature
+
+**Weaknesses**:
+- BiLSTM stage is sequential → slower training than pure CNN
+- Gradient flow through BiLSTM can be unstable for very long sequences
+- More hyperparameters to tune (kernel sizes, pool sizes, LSTM layers)
+
+**Best for**: Balanced approach when local pattern extraction + temporal ordering both matter
+
+---
+
+### D. Pure Transformer (Encoder-Only)
+
+```
+Minute Bars → [Linear Projection] → [Positional Encoding (Time2Vec)]
+            → [6× Transformer Encoder Layers]
+            → [CLS Token or Mean Pool] → Heads
+
+Each layer: MHA (8 heads) → FFN → LayerNorm → Residual
+```
+
+**Strengths**:
+- Maximum expressivity — can learn any temporal pattern
+- Parallel training (no sequential bottleneck)
+- Well-studied, extensive tooling support
+
+**Weaknesses**:
+- **O(n²) memory** for self-attention: 375 bars × 375 bars = 140K attention pairs per layer
+- **Needs large data**: Transformers overfit with small data, but we have plenty
+- **No inductive bias for locality**: Must learn that nearby bars are related (CNNs know this)
+- **Positional encoding crucial**: Without good positional encoding, performance degrades
+
+**Mitigation**: Use **Sparse Attention** (local window + global tokens) to reduce from O(n²) to O(n·k)
+
+**Best for**: When compute is abundant and data is massive (we qualify on data, less so on compute)
+
+---
+
+### E. WaveNet-style Dilated CNN
+
+```
+Minute Bars → [Stack of 10 Dilated Causal Conv layers]
+            → Skip connections from each layer → Sum → Heads
+
+Dilations: 1, 2, 4, 8, 16, 32, 64, 128, 256, 512
+Receptive field: 1024 bars → full trading day + some of previous day
+```
+
+**Strengths**:
+- Extremely large receptive field (covers entire trading day)
+- Skip connections from every layer capture multi-scale patterns
+- Very fast training and inference
+- Originally designed for audio (similar to financial tick data in structure)
+
+**Weaknesses**:
+- No attention mechanism — purely local processing with wide receptive field
+- May miss complex long-range dependencies (e.g., morning pattern → EOD reversal)
+- Requires deep stack for full-day coverage → more parameters than TCN
+
+**Best for**: When raw speed and full-day receptive field matter most
+
+---
+
+### F. Mamba (State Space Model)
+
+```
+Minute Bars → [Linear Projection] → [6× Mamba Blocks]
+            → [Mean Pool] → Heads
+
+Each Mamba Block:
+  Input → Linear → SSM (selective scan) → Linear → Output
+  Selective state space: input-dependent state transitions
+```
+
+**Strengths**:
+- **Linear time complexity**: O(n) vs O(n²) for Transformer
+- **Long-range memory**: State space models handle very long sequences naturally
+- **Selective mechanism**: Input-dependent gating (like LSTM gates but faster)
+- **Cutting-edge**: State-of-the-art on many sequence benchmarks (2024)
+
+**Weaknesses**:
+- **Very new** (Dec 2023): Less battle-tested in finance
+- **Complex implementation**: Custom CUDA kernels for efficient training
+- **Limited financial literature**: Few papers on Mamba for stock prediction
+- **Hardware dependency**: Best performance requires GPU with custom ops
+
+**Best for**: When handling very long sequences (multi-day minute bars) with limited compute
+
+---
+
+### 3.2 Systematic Comparison
+
+| Dimension | TCN+Attn (A) | TFT (B) | CNN-BiLSTM (C) | Transformer (D) | WaveNet (E) | Mamba (F) |
+|-----------|:---:|:---:|:---:|:---:|:---:|:---:|
+| **Training speed (CPU)** | ⭐⭐⭐⭐⭐ | ⭐⭐ | ⭐⭐⭐ | ⭐⭐ | ⭐⭐⭐⭐⭐ | ⭐⭐⭐ |
+| **Sequence modeling** | ⭐⭐⭐⭐ | ⭐⭐⭐⭐⭐ | ⭐⭐⭐⭐ | ⭐⭐⭐⭐⭐ | ⭐⭐⭐ | ⭐⭐⭐⭐⭐ |
+| **Local pattern detection** | ⭐⭐⭐⭐⭐ | ⭐⭐⭐ | ⭐⭐⭐⭐⭐ | ⭐⭐⭐ | ⭐⭐⭐⭐⭐ | ⭐⭐⭐⭐ |
+| **Interpretability** | ⭐⭐⭐ | ⭐⭐⭐⭐⭐ | ⭐⭐ | ⭐⭐⭐ | ⭐⭐ | ⭐⭐ |
+| **Memory efficiency** | ⭐⭐⭐⭐⭐ | ⭐⭐⭐ | ⭐⭐⭐⭐ | ⭐⭐ | ⭐⭐⭐⭐ | ⭐⭐⭐⭐⭐ |
+| **Overfitting resistance** | ⭐⭐⭐⭐ | ⭐⭐⭐ | ⭐⭐⭐⭐ | ⭐⭐ | ⭐⭐⭐⭐ | ⭐⭐⭐⭐ |
+| **Maturity in finance** | ⭐⭐⭐⭐ | ⭐⭐⭐⭐⭐ | ⭐⭐⭐⭐⭐ | ⭐⭐⭐⭐ | ⭐⭐⭐ | ⭐⭐ |
+| **Integration w/ sentiment** | ⭐⭐⭐⭐ | ⭐⭐⭐⭐⭐ | ⭐⭐⭐⭐ | ⭐⭐⭐⭐⭐ | ⭐⭐⭐ | ⭐⭐⭐⭐ |
+| **Total** | **34** | **32** | **33** | **28** | **31** | **31** |
+
+---
+
+## 4. Recommended Approach: Multi-Architecture Tournament
+
+Rather than picking one architecture upfront, we run a **tournament** to find empirically which works best on our data.
+
+### 4.1 Tournament Design
+
+```
+Phase 1: Quick Screening (subset data)
+  ├─ Train all 6 architectures on 20 liquid stocks × 2 years (2022-2023)
+  ├─ Validate on 2024 H1
+  ├─ Compare: H1 direction accuracy, Sharpe ratio, training time
+  └─ Eliminate bottom 3 architectures
+
+Phase 2: Full Training (top 3)
+  ├─ Train top 3 on 100 stocks × 5 years (2019-2023)
+  ├─ Validate on 2024
+  ├─ Test on 2025 (sealed)
+  └─ Select winner + runner-up
+
+Phase 3: Full-Scale Training (winner)
+  ├─ Train winner on 499 stocks × 8 years (2015-2023)
+  ├─ Walk-forward validation (yearly re-train)
+  └─ Final backtest on 2025
+
+Phase 4: Ensemble (optional)
+  ├─ Combine winner + runner-up predictions
+  ├─ Weighted average or stacking
+  └─ Test if ensemble beats single model
+```
+
+### 4.2 Fixed Evaluation Protocol
+
+All models tested under identical conditions:
+
+| Parameter | Value |
+|-----------|-------|
+| **Input sequence** | Last 120 minute bars (~2 hours) |
+| **Prediction horizons** | 15min, 30min, 60min, EOD |
+| **Training data** | Standardized per tournament phase |
+| **Batch size** | 512 |
+| **Max epochs** | 50 (early stopping, patience=10) |
+| **Optimizer** | AdamW (lr=3e-4, wd=1e-4) |
+| **Loss** | Direction (focal) + Magnitude (L1) + Confidence (BCE) |
+| **Evaluation metric** | Direction accuracy (primary), IC, Sharpe (secondary) |
+| **Normalization** | RobustScaler per feature, fit on train only |
+
+---
+
+## 5. Sentiment & News Integration
+
+### 5.1 The Challenge for Intraday
+
+For daily predictions, overnight sentiment accumulates and affects next-day opens. For **intraday**, the dynamics are different:
+
+| Timing | Sentiment Source | Impact |
+|--------|-----------------|--------|
+| **Pre-market** (7-9:15 AM) | Overnight news, global markets | Gap open, first-hour direction |
+| **During session** (9:15-3:30) | Breaking headlines, sector news | Intraday momentum shifts |
+| **After close** (3:30-7 PM) | Results announcements, policy news | Next-day gap (less relevant for intraday) |
+
+### 5.2 Sentiment Integration Architecture
+
+We propose a **3-stream sentiment module**:
+
+```
+┌─────────────────────────────────────────────────┐
+│            SENTIMENT FUSION MODULE               │
+│                                                  │
+│  Stream 1: Pre-Market Sentiment                  │
+│  ├─ Overnight news headlines (GDELT, Google RSS) │
+│  ├─ FinBERT scores aggregated to stock-level     │
+│  ├─ Global market indicators (US close, Asia)    │
+│  └─ Output: (B, 8) pre-market sentiment vector   │
+│                                                  │
+│  Stream 2: Historical Sentiment Context          │
+│  ├─ 5-day rolling sentiment (from CSV data)      │
+│  ├─ Sentiment momentum (5d vs 21d)               │
+│  ├─ Sentiment spike indicator                    │
+│  ├─ Sentiment-price divergence                   │
+│  └─ Output: (B, 6) historical context vector     │
+│                                                  │
+│  Stream 3: Market Regime Context                 │
+│  ├─ NIFTY 50 intraday trend (up/down/flat)       │
+│  ├─ Sector index performance today               │
+│  ├─ VIX level and change                         │
+│  ├─ Advance-decline ratio                        │
+│  └─ Output: (B, 6) market context vector         │
+│                                                  │
+│  Fusion: Concat(S1, S2, S3) → MLP → (B, 32)     │
+│  Injected into main model as context features    │
+└─────────────────────────────────────────────────┘
+```
+
+### 5.3 Sentiment Features for Intraday
+
+| # | Feature | Source | Description |
+|---|---------|--------|-------------|
+| 1 | `premarket_sentiment` | FinBERT / Google News | Avg sentiment of last 12h headlines |
+| 2 | `premarket_sentiment_count` | News count | Number of headlines (more = more volatile) |
+| 3 | `premarket_sentiment_max` | Max score | Strongest single headline sentiment |
+| 4 | `premarket_sentiment_std` | Score std | Controversy indicator |
+| 5 | `sentiment_5d_avg` | CSV data | 5-day rolling average sentiment |
+| 6 | `sentiment_momentum` | CSV data | 5d avg - 21d avg |
+| 7 | `sentiment_spike` | CSV data | Today vs 5d avg (> 2σ = spike) |
+| 8 | `sentiment_price_div` | Derived | Sentiment direction ≠ price direction |
+| 9 | `nifty_intraday_return` | Index data | NIFTY 50 return since open |
+| 10 | `sector_intraday_return` | Index data | Stock's sector index return since open |
+| 11 | `vix_level` | Index data | India VIX (fear gauge) |
+| 12 | `vix_change` | Index data | VIX change from yesterday |
+| 13 | `market_breadth` | Derived | Advance-decline ratio |
+| 14 | `global_cue` | Derived | US futures / Asia market overnight return |
+
+### 5.4 How Sentiment Enters Each Architecture
+
+| Architecture | Integration Method |
+|-------------|-------------------|
+| **TCN + Attention** | Concat with TCN output before final MLP |
+| **TFT** | Static covariates (stock-level) + known future inputs (time-based) |
+| **CNN-BiLSTM** | Inject as initial hidden state of BiLSTM |
+| **Transformer** | Extra CLS-like tokens appended to sequence |
+| **WaveNet** | Conditioning vector multiplied with skip connections |
+| **Mamba** | Concatenated to input features at each timestep |
+
+---
+
+## 6. Intraday Feature Engineering (V2)
+
+### 6.1 Per-Bar Features (25 features per minute bar)
+
+| # | Feature | Formula / Description |
+|---|---------|----------------------|
+| 1 | `log_return` | log(Close_t / Close_{t-1}) |
+| 2 | `volume_ratio` | Volume_t / EMA_20(Volume) |
+| 3 | `vwap_distance` | (Close - cumulative_VWAP) / VWAP |
+| 4 | `ema_9_distance` | (Close - EMA_9) / EMA_9 |
+| 5 | `ema_20_distance` | (Close - EMA_20) / EMA_20 |
+| 6 | `rsi_14` | 14-bar RSI |
+| 7 | `bb_zscore` | (Close - BB_mid) / (BB_upper - BB_mid) |
+| 8 | `bb_width` | (BB_upper - BB_lower) / BB_mid |
+| 9 | `body_ratio` | abs(C-O) / (H-L+1e-10) — candle body proportion |
+| 10 | `upper_shadow_ratio` | (H - max(O,C)) / (H-L+1e-10) |
+| 11 | `lower_shadow_ratio` | (min(O,C) - L) / (H-L+1e-10) |
+| 12 | `spread_pct` | (H-L) / C — intrabar volatility |
+| 13 | `cum_volume_pct` | cumsum(Volume) / typical_day_volume |
+| 14 | `time_normalized` | (minutes_since_930) / 375 — position in session |
+| 15 | `orb_high_dist` | (Close - ORB_high) / ORB_range |
+| 16 | `orb_low_dist` | (Close - ORB_low) / ORB_range |
+| 17 | `day_return` | (Close - day_open) / day_open |
+| 18 | `momentum_5` | Close / Close_{t-5} - 1 |
+| 19 | `momentum_20` | Close / Close_{t-20} - 1 |
+| 20 | `vol_momentum` | (up_volume_20 - down_volume_20) / total_volume_20 |
+| 21 | `atr_14` | 14-bar ATR / Close — normalized |
+| 22 | `close_vs_day_range` | (Close - day_low) / (day_high - day_low) |
+| 23 | `session_volatility` | rolling_std(log_return, 20) |
+| 24 | `obv_slope` | linear regression slope of OBV over 20 bars |
+| 25 | `trade_intensity` | Volume × spread — proxy for institutional activity |
+
+### 6.2 Session-Level Context Features (20 features, static per session)
+
+These are computed once at session start from daily data:
+
+| # | Feature | Description |
+|---|---------|-------------|
+| 1-4 | `prev_day_rsi`, `prev_day_macd`, `prev_day_macd_hist`, `prev_day_bb_zscore` | Yesterday's daily indicators |
+| 5-6 | `prev_day_trend_strength`, `prev_day_regime` | Trend context |
+| 7-8 | `prev_day_volatility_21`, `prev_day_adx` | Volatility context |
+| 9 | `overnight_return` | (Today's open - Yesterday's close) / Yesterday's close |
+| 10 | `gap_size` | Absolute overnight gap as % |
+| 11 | `gap_direction` | +1 (gap up), -1 (gap down), 0 (flat) |
+| 12 | `prev_day_close_location` | Where yesterday closed relative to its range |
+| 13 | `prev_day_volume_zscore` | Yesterday's volume vs 20-day average |
+| 14 | `day_of_week` | 0-4 (Monday-Friday) one-hot |
+| 15 | `is_expiry_week` | F&O expiry week flag |
+| 16 | `is_monthly_expiry` | Monthly expiry flag |
+| 17 | `is_result_season` | Earnings season flag |
+| 18 | `days_since_52w_high` | Days since 52-week high |
+| 19 | `days_since_52w_low` | Days since 52-week low |
+| 20 | `avg_intraday_range` | 20-day average of (High-Low)/Close |
+
+---
+
+## 7. Training Methodology
+
+### 7.1 Data Pipeline
+
+```
+For each stock:
+  1. Load minute CSV → Filter to market hours (9:15-15:30)
+  2. Compute 25 per-bar features
+  3. Compute session context (20 features)
+  4. Generate samples:
+     - Input: (120 bars × 25 features) + (20 context features) + (14 sentiment features)
+     - Target: direction + magnitude at 15m, 30m, 60m, EOD
+  5. Sample every 15 minutes within each session (avoid overlapping targets)
+```
+
+### 7.2 Target Construction
+
+| Horizon | Target Return | Direction Label | Sample Rate |
+|---------|--------------|-----------------|-------------|
+| **15 min** | (Close_{t+15} - Close_t) / Close_t | 1 if > 0, else 0 | Every 15 bars |
+| **30 min** | (Close_{t+30} - Close_t) / Close_t | 1 if > 0, else 0 | Every 15 bars |
+| **60 min** | (Close_{t+60} - Close_t) / Close_t | 1 if > 0, else 0 | Every 15 bars |
+| **EOD** | (Close_EOD - Close_t) / Close_t | 1 if > 0, else 0 | Every 15 bars |
+
+> [!NOTE]
+> We skip samples from the last 60 minutes of the session (after 2:30 PM) for the 60-min and EOD targets to avoid lookahead bias from market close mechanics.
+
+### 7.3 Train/Val/Test Splits
+
+| Split | Period | Purpose |
+|-------|--------|---------|
+| **Train** | 2015-01-01 to 2023-12-31 | Model fitting |
+| **Validation** | 2024-01-01 to 2024-12-31 | Hyperparameter tuning, early stopping |
+| **Test** | 2025-01-01 to 2025-12-31 | Final sealed evaluation |
+
+### 7.4 Training Considerations
+
+**Handling 499 stocks × 9 years of minute data**:
+
+1. **Lazy loading**: Don't load all data into memory. Use memory-mapped files or chunked reading.
+2. **Per-stock batching**: Each mini-batch contains samples from multiple stocks for diversity.
+3. **Session-aware sampling**: Sample from different sessions and stocks uniformly.
+4. **Data augmentation**:
+   - Time warping (stretch/compress minute sequences by ±10%)
+   - Volume scaling (random ×0.8-1.2 to simulate different liquidity)
+   - Random session cropping (start from random bar within first hour)
+5. **Curriculum learning**: Start with high-volume liquid stocks (Nifty 50), gradually add midcaps.
+
+### 7.5 Loss Function
+
+Same multi-task structure as StockXpert, adapted for intraday:
+
+```
+L = w_dir × FocalLoss(direction_logits, direction_targets)    # 0.5
+  + w_mag × HuberLoss(magnitude_pred, magnitude_targets)      # 0.3
+  + w_conf × BCE(confidence, was_correct_direction)            # 0.2
+  + w_vwap × L1Loss(vwap_target_pred, eod_vwap_deviation)     # 0.1
+```
+
+**Intraday-specific additions**:
+- **Time-weighted loss**: Predictions near market open (9:15-10:00) get 1.5× weight (most actionable)
+- **Liquidity-weighted loss**: High-volume stocks get slightly more weight (more tradeable)
+
+---
+
+## 8. Intraday Backtesting Strategy
+
+### 8.1 Simulation Rules
+
+| Parameter | Value |
+|-----------|-------|
+| **Trading hours** | 9:30 AM – 3:15 PM (skip first 15 min, last 15 min) |
+| **Entry** | When model confidence ≥ threshold |
+| **Exit** | At prediction horizon OR stop-loss OR EOD (mandatory) |
+| **Position sizing** | Fixed ₹1L per trade (or configurable) |
+| **Max concurrent** | 3 positions |
+| **Brokerage** | ₹20 per order (flat, like Zerodha) |
+| **STT** | 0.025% on sell side |
+| **Slippage** | 0.05% per trade |
+| **Stop loss** | 0.5% (tight, intraday) |
+
+### 8.2 Strategy Variants
+
+| Strategy | Entry Logic | Exit Logic | Expected Trades/Day |
+|----------|------------|------------|---------------------|
+| **Scalp** | 15-min P(up) ≥ 0.7 | 15-min horizon or 0.3% SL | 5-10 |
+| **Momentum** | 30-min P(up) ≥ 0.65 + volume > 1.5× avg | 30-min horizon or 0.5% SL | 3-5 |
+| **Swing Intra** | 60-min P(up) ≥ 0.60 + trend alignment | 60-min horizon or 0.7% SL | 2-3 |
+| **EOD Position** | EOD P(up) ≥ 0.60 + morning entry | 3:15 PM mandatory close | 1-2 |
+
+---
+
+## 9. Integration with Existing StockXpert
+
+### 9.1 Shared Infrastructure
+
+The intraday model should reuse:
+- `HistoricalDataLoader` — minute data loading
+- [SentimentEncoder](file:///Users/onkarj012/Projects/major_pro/trial/src/stockxpert/models/sentiment_encoder.py#8-43) — sentiment feature processing
+- [Trainer](file:///Users/onkarj012/Projects/major_pro/trial/src/stockxpert/training/train_loop.py#232-560) / [FinancialEarlyStopping](file:///Users/onkarj012/Projects/major_pro/trial/src/stockxpert/training/train_loop.py#36-120) — training loop
+- [losses.py](file:///Users/onkarj012/Projects/major_pro/trial/src/stockxpert/models/losses.py) — DirectionAwareLoss, multi-task loss framework
+- Config system (YAML-based)
+- Reporting infrastructure
+
+### 9.2 New Components Required
+
+| Component | File | Description |
+|-----------|------|-------------|
+| IntradayNet model | `models/intraday_model.py` | TCN/TFT/etc architecture |
+| Intraday features V2 | `features/intraday_features_v2.py` | Per-bar feature computation |
+| Intraday dataset | `dataset/intraday_dataset.py` | PyTorch Dataset for minute data |
+| Intraday training | `scripts/train_intraday.py` | Training script |
+| Intraday backtester | `scripts/backtest_intraday.py` | Minute-level simulation |
+| Intraday config | `configs/intraday_backtest.yaml` | Model + training config |
+
+---
+
+## 10. Recommendation: Phased Approach
+
+### Phase 1: Quick Win — TCN + Attention
+Start with **Architecture A (TCN + Attention)** because:
+- Fastest to train on CPU
+- Lowest overfitting risk for our noisy data
+- Simple to implement and debug
+- Good baseline to beat
+
+### Phase 2: Challenge — TFT or CNN-BiLSTM
+Train the **runner-up** to see if extra complexity helps:
+- TFT if we want interpretability (know WHY the model predicts)
+- CNN-BiLSTM if we want a battle-tested approach
+
+### Phase 3: Ensemble
+Combine top 2 models for potentially better performance.
+
+### Phase 4: Full Scale
+Train winner on all 499 stocks with walk-forward validation.
+
+---
+
+> [!TIP]
+> **Before building any model**: Run the 499-stock backtest with the existing daily model first. If the daily model's H1 prediction already gives >60% hit rate on intraday entry timing, the marginal benefit of a dedicated intraday model may be smaller than expected. Let the data decide.

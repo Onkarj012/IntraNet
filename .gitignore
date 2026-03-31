@@ -1,0 +1,164 @@
+# =============================================================================
+# IntradayNet — .gitignore
+# =============================================================================
+
+# ── Python ────────────────────────────────────────────────────────────────────
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+*.egg
+*.egg-info/
+*.whl
+dist/
+build/
+eggs/
+*.manifest
+*.spec
+pip-log.txt
+pip-delete-this-directory.txt
+
+# Virtual environments
+.venv/
+venv/
+ENV/
+env/
+.conda/
+*.env
+
+# UV package manager
+.uv_cache/
+
+# ── PyTorch / ML Model Artifacts ─────────────────────────────────────────────
+# Trained model checkpoints (large binary files)
+*.pt
+*.pth
+*.ckpt
+*.bin
+*.safetensors
+*.onnx
+
+# LightGBM boosters
+*.lgb
+
+# Model run directories (checkpoints, logs, metrics)
+runs/
+!runs/.gitkeep
+
+# ── Training Data & Prebatched ───────────────────────────────────────────────
+# Pre-batched numpy training data
+prebatched/
+!prebatched/.gitkeep
+
+# Feature caches
+features_cache/
+!features_cache/.gitkeep
+
+# ── Market Data (downloaded via yfinance) ─────────────────────────────────────
+# Nifty 500 minute-level CSVs (large, downloadable)
+nifty500/
+!nifty500/.gitkeep
+
+# Market data cache (VIX, crude, gold, indices)
+market_data_cache/
+!market_data_cache/.gitkeep
+
+# ── Sentiment Data ───────────────────────────────────────────────────────────
+# Sentiment CSVs (may contain large processed data)
+# Keep raw/comitted sentiment files, ignore generated ones
+sentiment/google_news_sentiment_2025.csv
+sentiment/sentiment_daily.csv
+
+# ── Recommendations & Backtest Output ────────────────────────────────────────
+# Generated morning picks
+recommendations/
+!recommendations/.gitkeep
+
+# Backtest results (generated output)
+backtest_results/
+!backtest_results/.gitkeep
+
+# Recommendation accuracy tracking (user-specific live data)
+recommendations_accuracy.csv
+
+# ── Testing ──────────────────────────────────────────────────────────────────
+.pytest_cache/
+*.pytest
+.coverage
+htmlcov/
+.tox/
+.nox/
+*.cover
+
+# ── Jupyter Notebooks ────────────────────────────────────────────────────────
+.ipynb_checkpoints/
+*.ipynb
+
+# ── IDE & Editor ─────────────────────────────────────────────────────────────
+# VS Code
+.vscode/
+*.code-workspace
+
+# PyCharm
+.idea/
+*.iml
+*.iws
+*.ipr
+
+# Sublime Text
+*.sublime-project
+*.sublime-workspace
+
+# Vim/Neovim
+*.swp
+*.swo
+*~
+.netrwhist
+
+# ── OS-Specific ──────────────────────────────────────────────────────────────
+# macOS
+.DS_Store
+.AppleDouble
+.LSOverride
+._*
+.Spotlight-V100
+.Trashes
+
+# Windows
+Thumbs.db
+Thumbs.db:encryptable
+ehthumbs.db
+ehthumbs_vista.db
+Desktop.ini
+$RECYCLE.BIN/
+*.stackdump
+[Ddesktop.ini
+
+# Linux
+*~
+.fuse_hidden*
+.directory
+.Trash-*
+.nfs*
+
+# ── Logs & Temporary Files ───────────────────────────────────────────────────
+*.log
+logs/
+.tmp/
+*.tmp
+*.temp
+*.bak
+*.backup
+*.swp
+
+# ── Documentation Build ──────────────────────────────────────────────────────
+docs/_build/
+site/
+
+# ── Secrets & Credentials ────────────────────────────────────────────────────
+.env
+.env.*
+*.pem
+*.key
+credentials.json
+secrets.yaml

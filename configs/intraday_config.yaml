@@ -1,0 +1,63 @@
+# IntradayNet Configuration — Phase 1 (TCN + Attention)
+
+horizons: [15, 30, 60, 375] # 15min, 30min, 60min, EOD
+seed: 42
+device: "mps"
+out_dir: "runs/intraday"
+
+data:
+  minute_data_dir: "nifty500"
+  sentiment_csv: "sentiment/combined_sentiment_2015_2025.csv"
+  market_open: "09:15"
+  market_close: "15:30"
+  bars_per_session: 375
+
+splits:
+  train_start: "2022-01-01"
+  train_end: "2023-12-31"
+  val_start: "2024-01-01"
+  val_end: "2024-12-31"
+  test_start: "2025-01-01"
+  test_end: "2025-12-31"
+
+model:
+  type: "tcn_attention"
+  hidden_dim: 128
+  attn_heads: 4
+  dropout: 0.2
+  num_per_bar_features: 25
+  num_context_features: 20
+  num_sentiment_features: 24
+  sequence_length: 120
+  tcn:
+    channels: [64, 64, 64, 64, 64]
+    kernel_size: 3
+    dilation_base: 2
+    dropout: 0.2
+
+train:
+  epochs: 50
+  batch_size: 512
+  lr: 0.0003
+  weight_decay: 0.0001
+  grad_clip: 1.0
+  early_stopping_patience: 10
+  warmup_epochs: 3
+  sample_interval: 30
+  num_workers: 0
+  loss:
+    direction_weight: 0.5
+    magnitude_weight: 0.3
+    confidence_weight: 0.2
+    gamma_pos: 2.0
+    gamma_neg: 2.0
+    downside_weight: 1.2
+    time_weight_open: 1.5
+
+backtest:
+  position_size: 100000.0
+  max_concurrent: 3
+  brokerage_per_order: 20.0
+  stt_rate: 0.00025
+  slippage_rate: 0.0005
+  stop_loss: 0.005
