@@ -133,7 +133,7 @@ class TestSentimentFeatures:
         builder = SentimentFeatureBuilder("/nonexistent/path.csv")
         dates = pd.date_range("2024-01-01", periods=5, freq="D")
         features = builder.get_features("RELIANCE", dates)
-        assert len(features.columns) == 14
+        assert len(features.columns) == len(SENTIMENT_FEATURE_NAMES)
 
     def test_all_zeros_when_no_data(self):
         builder = SentimentFeatureBuilder("/nonexistent/path.csv")

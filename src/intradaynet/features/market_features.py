@@ -254,12 +254,15 @@ class MarketFeatureBuilder:
         result = {}
 
         # Feature 9: nifty_intraday_return
+        # FIXED: Was using today's close-to-close return (LEAK at 9:15 AM).
+        # Now uses yesterday's daily return — known at market open.
         nifty = self._get_close("nifty50")
         result["nifty_intraday_return"] = aligned(
-            self._safe_return(nifty)
+            nifty.pct_change().shift(1)  # previous day's close-to-close return
         ).clip(-0.1, 0.1)
 
         # Feature 10: sector_intraday_return (default: NIFTY50)
+        # FIXED: Inherited from nifty_intraday_return fix above.
         result["sector_intraday_return"] = result["nifty_intraday_return"]
 
         # Feature 11: vix_level (India VIX / 100)

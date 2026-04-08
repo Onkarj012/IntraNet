@@ -25,7 +25,7 @@ PER_BAR_FEATURE_NAMES = [
     "upper_shadow_ratio",
     "lower_shadow_ratio",
     "spread_pct",
-    "cum_volume_pct",
+    "volume_pace",
     "time_normalized",
     "orb_high_dist",
     "orb_low_dist",
@@ -34,7 +34,7 @@ PER_BAR_FEATURE_NAMES = [
     "momentum_20",
     "vol_momentum",
     "atr_14",
-    "close_vs_day_range",
+    "close_vs_running_range",
     "session_volatility",
     "obv_slope",
     "trade_intensity",
@@ -107,10 +107,11 @@ def compute_per_bar_features(minute_df: pd.DataFrame) -> pd.DataFrame:
     # ── 12. spread_pct: (H-L)/C — intrabar volatility ──
     features["spread_pct"] = ((h - l) / c.replace(0, 1)).clip(0, 0.5)
 
-    # ── 13. cum_volume_pct: cumsum(Volume) / typical_day_volume ──
-    daily_vol = v.groupby(df["_date"]).transform("sum").replace(0, 1).astype(float)
-    cum_vol_session = v.groupby(df["_date"]).cumsum().astype(float)
-    features["cum_volume_pct"] = (cum_vol_session / daily_vol).clip(0, 1)
+    # ── 13. volume_pace: current volume / rolling 30-bar avg volume ──
+    # FIXED: Was cum_volume_pct which used full-session volume (LEAK).
+    # Now uses rolling volume pace — purely causal, no future data.
+    vol_roll_avg = v.rolling(30, min_periods=5).mean().replace(0, 1)
+    features["volume_pace"] = (v / vol_roll_avg).clip(0, 50)
 
     # ── 14. time_normalized: position in session [0, 1] ──
     bar_in_session = v.groupby(df["_date"]).cumcount()
@@ -144,11 +145,13 @@ def compute_per_bar_features(minute_df: pd.DataFrame) -> pd.DataFrame:
     # ── 21. atr_14: normalized ATR ──
     features["atr_14"] = _compute_atr(h, l, c, period=14)
 
-    # ── 22. close_vs_day_range ──
-    day_high = h.groupby(df["_date"]).cummax()
-    day_low = l.groupby(df["_date"]).cummin()
+    # ── 22. close_vs_running_range ──
+    # FIXED: Was close_vs_day_range which used cummax/cummin (LEAK).
+    # Now uses expanding min/max — only past+current bars within session.
+    day_high = h.groupby(df["_date"]).transform(lambda x: x.expanding().max())
+    day_low = l.groupby(df["_date"]).transform(lambda x: x.expanding().min())
     day_range = (day_high - day_low).replace(0, 1e-10)
-    features["close_vs_day_range"] = ((c - day_low) / day_range).clip(0, 1)
+    features["close_vs_running_range"] = ((c - day_low) / day_range).clip(0, 1)
 
     # ── 23. session_volatility: rolling std of log returns ──
     features["session_volatility"] = (

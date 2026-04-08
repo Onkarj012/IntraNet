@@ -46,7 +46,7 @@ python scripts/morning_picks.py --model runs/lgbm/ --date 2026-03-12
 ```
 
 ```bash
-PYTHONPATH=src python scripts/morning_picks.py --model runs/lgbm/ --date 2026-03-30 --max-price 1000 --top-n 10 --horizon H375
+PYTHONPATH=src python scripts/morning_picks.py --model runs/lgbm/ --date 2026-04-01 --max-price 1000 --top-n 15 --horizon H375
 ```
 
 ---
