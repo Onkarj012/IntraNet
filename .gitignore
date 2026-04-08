@@ -59,6 +59,9 @@ features_cache/
 nifty500/
 !nifty500/.gitkeep
 
+prebatched_v2/
+!prebatched_v2/.gitkeep
+
 # Market data cache (VIX, crude, gold, indices)
 market_data_cache/
 !market_data_cache/.gitkeep
