@@ -120,6 +120,7 @@ class PointInTimeFeatureEngine:
         
         # === YESTERDAY'S INTRADAY FEATURES (computed EOD) ===
         # VWAP (calculated after market close yesterday)
+        yesterday_data = yesterday_data.copy()  # Fix SettingWithCopyWarning
         yesterday_data["tp"] = (yesterday_data["high"] + yesterday_data["low"] + yesterday_data["close"]) / 3
         yesterday_data["tpv"] = yesterday_data["tp"] * yesterday_data["volume"]
         vwap_yest = yesterday_data["tpv"].sum() / yesterday_data["volume"].sum()
@@ -214,6 +215,7 @@ class PointInTimeFeatureEngine:
         features["current_vs_open"] = (current_price - today_open) / today_open
         
         # Intraday VWAP (up to current time only!)
+        today_data = today_data.copy()  # Fix SettingWithCopyWarning
         today_data["tp"] = (today_data["high"] + today_data["low"] + today_data["close"]) / 3
         today_data["tpv"] = today_data["tp"] * today_data["volume"]
         vwap_current = today_data["tpv"].sum() / today_data["volume"].sum()
