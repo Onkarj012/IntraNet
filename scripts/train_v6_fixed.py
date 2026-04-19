@@ -173,8 +173,7 @@ params = {
     'bagging_freq': 5,
     'verbose': -1,
     'max_depth': 8,
-    'is_unbalance': True,  # Handle class imbalance (we have 90% false negatives)
-    'scale_pos_weight': 2.0,  # Weight UP class more heavily
+    'scale_pos_weight': 2.0,  # Weight UP class more heavily (fix 90% false negatives)
 }
 
 print("   Training direction model...")
