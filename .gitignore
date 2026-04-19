@@ -118,6 +118,9 @@ htmlcov/
 *~
 .netrwhist
 
+# Cursor / Codex
+.codex/
+
 # ── OS-Specific ──────────────────────────────────────────────────────────────
 # macOS
 .DS_Store
@@ -157,6 +160,26 @@ logs/
 # ── Documentation Build ──────────────────────────────────────────────────────
 docs/_build/
 site/
+
+# ── New Project Directories ─────────────────────────────────────────────────
+# Cache directories (large pre-batched features)
+cache/
+
+# Data directory (market data - large files)
+data/nifty500_minute/
+data/*.csv
+
+# Results directory (keep structure, ignore large model files)
+results/models/*/
+results/paper_trading/*.json
+results/training/*.json
+
+# Generated reports
+reports/
+paper_trading_results_fixed/
+
+# Graphify output
+graphify-out/
 
 # ── Secrets & Credentials ────────────────────────────────────────────────────
 .env
