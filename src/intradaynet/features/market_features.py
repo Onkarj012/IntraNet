@@ -2,7 +2,7 @@
 Global market & macro feature builder.
 
 Downloads and caches index/commodity/currency data from yfinance,
-then computes 10 global macro features per trading date:
+then computes global macro features per trading date:
 
   15. crude_oil_return        — Brent crude daily return
   16. crude_oil_5d_change     — 5-day crude oil trend
@@ -56,7 +56,6 @@ SECTOR_INDEX_MAP = {
     "DEFAULT":     "^NSEI",
 }
 
-# 10 new global/macro feature names
 MARKET_FEATURE_NAMES = [
     "crude_oil_return",
     "crude_oil_5d_change",
@@ -68,6 +67,12 @@ MARKET_FEATURE_NAMES = [
     "dow_overnight_return",
     "nasdaq_overnight_return",
     "global_volatility_regime",
+    "india_vix_percentile",
+    "nifty_5d_return",
+    "sp500_overnight_return",
+    "commodity_pressure",
+    "dollar_yield_pressure",
+    "risk_on_signal",
 ]
 
 
@@ -93,24 +98,39 @@ class MarketFeatureBuilder:
 
         if end is None:
             end = (datetime.now() + timedelta(days=1)).strftime("%Y-%m-%d")
+        start_dt = pd.Timestamp(start).normalize()
+        end_dt = pd.Timestamp(end).normalize()
 
         for name, ticker in MACRO_TICKERS.items():
             csv_path = self.cache_dir / f"{name}.csv"
 
             try:
+                existing = None
                 # Check if we have cached data and when it ends
                 if csv_path.exists():
                     existing = pd.read_csv(csv_path, parse_dates=["Date"], index_col="Date")
                     if len(existing) > 0:
                         last_date = existing.index.max()
+                        # If the cache already extends past the requested end date,
+                        # reuse it instead of issuing an invalid start>end request.
+                        if last_date >= end_dt:
+                            self._data[name] = existing.sort_index()
+                            logger.debug(f"Using cached {name}: {len(existing)} rows")
+                            continue
                         # Always download the new portion
-                        dl_start = (last_date - timedelta(days=1)).strftime("%Y-%m-%d")
+                        dl_start = max(start_dt, (last_date - timedelta(days=1)).normalize())
                     else:
-                        dl_start = start
+                        dl_start = start_dt
                 else:
-                    dl_start = start
+                    dl_start = start_dt
 
-                df = yf.download(ticker, start=dl_start, end=end,
+                if dl_start >= end_dt:
+                    if existing is not None:
+                        self._data[name] = existing.sort_index()
+                        logger.debug(f"Using cached {name}: {len(existing)} rows")
+                    continue
+
+                df = yf.download(ticker, start=dl_start.strftime("%Y-%m-%d"), end=end_dt.strftime("%Y-%m-%d"),
                                  interval="1d", progress=False, auto_adjust=True)
                 if df.empty:
                     logger.warning(f"No data for {name} ({ticker})")
@@ -161,13 +181,13 @@ class MarketFeatureBuilder:
 
     def get_features(self, dates: pd.DatetimeIndex) -> pd.DataFrame:
         """
-        Compute 10 global/macro features for each date.
+        Compute global/macro features for each date.
 
         Args:
             dates: DatetimeIndex of dates to get features for.
 
         Returns:
-            DataFrame with 10 market feature columns, indexed by date.
+            DataFrame with market feature columns, indexed by date.
         """
         self._load_cached()
         features = pd.DataFrame(0.0, index=dates, columns=MARKET_FEATURE_NAMES)
@@ -229,6 +249,37 @@ class MarketFeatureBuilder:
         cboe_vix = self._get_close("cboe_vix")
         vix_norm = (cboe_vix / 100.0).clip(0, 1).fillna(0.2)
         features["global_volatility_regime"] = aligned(vix_norm)
+
+        india_vix = self._get_close("india_vix")
+        india_vix_ffill = india_vix.reindex(dates, method="ffill")
+        india_vix_pct = india_vix_ffill.rolling(252, min_periods=20).rank(pct=True)
+        features["india_vix_percentile"] = india_vix_pct.fillna(0.5).clip(0, 1)
+
+        nifty50 = self._get_close("nifty50")
+        features["nifty_5d_return"] = aligned(nifty50.pct_change(5).fillna(0).clip(-0.2, 0.2))
+
+        sp500 = self._get_close("sp500")
+        features["sp500_overnight_return"] = aligned(self._safe_return(sp500))
+
+        features["commodity_pressure"] = (
+            features["crude_oil_return"] - features["gold_return"]
+        ).clip(-0.2, 0.2)
+        features["dollar_yield_pressure"] = (
+            features["dxy_change"] + features["us_10y_yield_change"] + features["usdinr_change"]
+        ).clip(-0.3, 0.3)
+
+        risk_stack = pd.DataFrame(
+            {
+                "asia": features["asia_sentiment"],
+                "dow": features["dow_overnight_return"],
+                "nasdaq": features["nasdaq_overnight_return"],
+                "sp500": features["sp500_overnight_return"],
+                "dxy": -features["dxy_change"],
+                "vix": -features["global_volatility_regime"],
+            },
+            index=dates,
+        )
+        features["risk_on_signal"] = risk_stack.mean(axis=1).clip(-1, 1)
 
         return features.fillna(0.0)
 

@@ -141,9 +141,10 @@ def test_profile_payload_caps_lists():
         candidates=candidates,
     )
 
-    assert len(payload["profiles"]["conservative"]["long"]) == 3
-    assert len(payload["profiles"]["conservative"]["short"]) == 3
-    assert len(payload["profiles"]["balanced"]["long"]) == 5
-    assert len(payload["profiles"]["balanced"]["short"]) == 5
-    assert len(payload["profiles"]["aggressive"]["long"]) == 8
-    assert len(payload["profiles"]["aggressive"]["short"]) == 8
+    assert len(payload["profiles"]["conservative"]["picks"]) == 3
+    assert len(payload["profiles"]["balanced"]["picks"]) == 5
+    assert len(payload["profiles"]["aggressive"]["picks"]) == 8
+    assert len(payload["profiles"]["conservative"]["long"]) <= 3
+    assert len(payload["profiles"]["conservative"]["short"]) <= 3
+    assert len(payload["profiles"]["balanced"]["long"]) <= 5
+    assert len(payload["profiles"]["balanced"]["short"]) <= 5

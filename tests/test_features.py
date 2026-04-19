@@ -107,8 +107,8 @@ class TestSessionFeatures:
     def test_feature_count(self):
         df = _make_minute_df(n_days=10)
         features = compute_session_features(df)
-        assert len(features.columns) == 20, \
-            f"Expected 20 features, got {len(features.columns)}"
+        assert len(features.columns) == len(SESSION_FEATURE_NAMES), \
+            f"Expected {len(SESSION_FEATURE_NAMES)} features, got {len(features.columns)}"
 
     def test_feature_names(self):
         df = _make_minute_df(n_days=10)

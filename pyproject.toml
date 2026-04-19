@@ -12,7 +12,11 @@ dependencies = [
     "tqdm>=4.65",
     "lightgbm>=4.0",
     "rich>=13.0",
+    "yfinance>=0.2.54",
 ]
+
+[project.scripts]
+intradaynet = "intradaynet.cli:main"
 
 [project.optional-dependencies]
 dev = [

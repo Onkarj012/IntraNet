@@ -222,10 +222,16 @@ def main():
 
     summary = Table(title="Recommendation Summary")
     summary.add_column("Profile", style="cyan")
+    summary.add_column("Top Picks", justify="right", style="bold green")
     summary.add_column("Long", justify="right", style="green")
     summary.add_column("Short", justify="right", style="red")
     for profile, books in payload["profiles"].items():
-        summary.add_row(profile, str(len(books["long"])), str(len(books["short"])))
+        summary.add_row(
+            profile,
+            str(len(books.get("picks", []))),
+            str(len(books["long"])),
+            str(len(books["short"])),
+        )
 
     console.print()
     console.print(

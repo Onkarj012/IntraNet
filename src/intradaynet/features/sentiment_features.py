@@ -5,17 +5,19 @@ Loads daily sentiment data and computes sentiment-derived features
 for each stock-date. Market-level features (VIX, NIFTY return, etc.)
 are filled from MarketFeatureBuilder when available.
 
-14 original + 10 new = 24 total sentiment/market features.
+Expanded sentiment and market context features for both the daily and
+live-backend pipelines.
 """
 
 import pandas as pd
 import numpy as np
 import logging
 from pathlib import Path
+from datetime import time
 
 logger = logging.getLogger("intradaynet.features.sentiment_features")
 
-# 24 sentiment + market features total
+# sentiment + market features total
 SENTIMENT_FEATURE_NAMES = [
     # ── Stock-level news sentiment (1-8) ──
     "premarket_sentiment",
@@ -26,6 +28,10 @@ SENTIMENT_FEATURE_NAMES = [
     "sentiment_momentum",
     "sentiment_spike",
     "sentiment_price_div",
+    "news_volume_shock",
+    "sentiment_surprise",
+    "sentiment_macro_agreement",
+    "sentiment_confidence",
     # ── India market features (9-14) ──
     "nifty_intraday_return",
     "sector_intraday_return",
@@ -44,6 +50,12 @@ SENTIMENT_FEATURE_NAMES = [
     "dow_overnight_return",
     "nasdaq_overnight_return",
     "global_volatility_regime",
+    "india_vix_percentile",
+    "nifty_5d_return",
+    "sp500_overnight_return",
+    "commodity_pressure",
+    "dollar_yield_pressure",
+    "risk_on_signal",
 ]
 
 # Original 14 feature names (for backward compatibility)
@@ -63,11 +75,13 @@ class SentimentFeatureBuilder:
                                          market_builder=market_builder)
     """
 
-    def __init__(self, csv_path: str, market_builder=None):
+    def __init__(self, csv_path: str, market_builder=None, market_open_time: str = "09:15"):
         self.csv_path = Path(csv_path)
         self._data = None
         self._loaded = False
         self.market_builder = market_builder
+        hour, minute = market_open_time.split(":")
+        self.market_open_cutoff = time(int(hour), int(minute))
 
     def _load(self):
         """Lazy-load sentiment CSV."""
@@ -84,10 +98,12 @@ class SentimentFeatureBuilder:
             df = pd.read_csv(self.csv_path, parse_dates=["Publish Date"])
             df = df.rename(columns={
                 "Symbol": "symbol",
-                "Publish Date": "date",
+                "Publish Date": "timestamp",
                 "sentiment_score": "score",
             })
-            df["date"] = pd.to_datetime(df["date"]).dt.date
+            df["timestamp"] = pd.to_datetime(df["timestamp"], errors="coerce")
+            df = df[df["timestamp"].notna()].copy()
+            df["date"] = df["timestamp"].dt.date
             self._data = df
             logger.info(f"Loaded sentiment data: {len(df)} rows")
         except Exception as e:
@@ -116,6 +132,12 @@ class SentimentFeatureBuilder:
             sym_data = self._data[self._data["symbol"] == symbol].copy()
 
             if not sym_data.empty:
+                # Use only articles published before market open for same-day features.
+                sym_data = sym_data[
+                    sym_data["timestamp"].dt.time <= self.market_open_cutoff
+                ].copy()
+
+            if not sym_data.empty:
                 # Aggregate daily sentiment scores
                 daily_sent = sym_data.groupby("date").agg(
                     mean_score=("score", "mean"),
@@ -134,7 +156,7 @@ class SentimentFeatureBuilder:
                 features["premarket_sentiment_max"] = daily_sent["max_score"].clip(-1, 1)
                 features["premarket_sentiment_std"] = daily_sent["std_score"].clip(0, 1)
 
-                # ── Features 5-7: Rolling sentiment ──
+                # ── Features 5-11: Rolling sentiment ──
                 features["sentiment_5d_avg"] = (
                     daily_sent["mean_score"].rolling(5, min_periods=1).mean().clip(-1, 1)
                 )
@@ -146,10 +168,22 @@ class SentimentFeatureBuilder:
                     (daily_sent["mean_score"] - features["sentiment_5d_avg"]) / sent_5d_std
                 ).clip(-3, 3)
 
+                count_mean = daily_sent["count"].rolling(10, min_periods=1).mean().replace(0, 1)
+                features["news_volume_shock"] = (
+                    daily_sent["count"] / count_mean - 1
+                ).clip(-2, 5)
+                features["sentiment_surprise"] = (
+                    daily_sent["mean_score"] - features["sentiment_5d_avg"]
+                ).clip(-1, 1)
+                features["sentiment_confidence"] = (
+                    np.log1p(daily_sent["count"]) / (1.0 + daily_sent["std_score"].fillna(0))
+                ).clip(0, 5) / 5.0
+
         # ── Feature 8: Sentiment-price divergence (stubbed) ──
         features["sentiment_price_div"] = 0.0
+        features["sentiment_macro_agreement"] = 0.0
 
-        # ── Features 9-24: Market-level features ──
+        # ── Market-level features ──
         if self.market_builder is not None:
             try:
                 # Fill features 9-14 (India-specific)
@@ -164,6 +198,13 @@ class SentimentFeatureBuilder:
                 for col in MARKET_FEATURE_NAMES:
                     if col in features.columns and col in market_feats.columns:
                         features[col] = market_feats[col]
+
+                if "global_cue" in features.columns:
+                    macro_sign = np.sign(features["global_cue"]).replace(0, 1)
+                else:
+                    macro_sign = np.sign(features["risk_on_signal"]).replace(0, 1)
+                sent_sign = np.sign(features["premarket_sentiment"]).replace(0, 0)
+                features["sentiment_macro_agreement"] = (sent_sign * macro_sign).clip(-1, 1)
 
             except Exception as e:
                 logger.warning(f"Failed to compute market features: {e}")

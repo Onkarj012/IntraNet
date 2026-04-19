@@ -5,6 +5,7 @@ Defines NIFTY indices constituents for filtering and backtesting.
 Using actual NIFTY100 as of 2024 for reproducibility.
 """
 
+from pathlib import Path
 from typing import List, Dict, Optional
 
 # NIFTY 100 constituents (as of early 2024)
@@ -63,14 +64,28 @@ NIFTY200_SYMBOLS: List[str] = NIFTY100_SYMBOLS + [
 
 def get_universe(name: str) -> List[str]:
     """Get list of symbols for a given universe."""
+    normalized = name.lower()
+    if normalized == "nifty500":
+        data_dir = Path("nifty500")
+        if not data_dir.exists():
+            raise ValueError("nifty500 data directory not found")
+        symbols = sorted(
+            path.stem.replace("_minute", "")
+            for path in data_dir.glob("*_minute.csv")
+            if not path.name.startswith(".")
+        )
+        if not symbols:
+            raise ValueError("No local nifty500 minute files found")
+        return symbols
+
     universes = {
         "nifty50": NIFTY50_SYMBOLS,
         "nifty100": NIFTY100_SYMBOLS,
         "nifty200": NIFTY200_SYMBOLS,
     }
-    if name.lower() not in universes:
-        raise ValueError(f"Unknown universe: {name}. Choose from {list(universes.keys())}")
-    return universes[name.lower()]
+    if normalized not in universes:
+        raise ValueError(f"Unknown universe: {name}. Choose from {[*universes.keys(), 'nifty500']}")
+    return universes[normalized]
 
 
 def is_in_universe(symbol: str, universe: str = "nifty100") -> bool:

@@ -22,7 +22,7 @@ from intradaynet.features.session_features import SESSION_FEATURE_NAMES
 from intradaynet.features.sentiment_features import SENTIMENT_FEATURE_NAMES
 
 
-FEATURE_SCHEMA_VERSION = "live_v1"
+FEATURE_SCHEMA_VERSION = "live_v2"
 FLAT_WINDOWS = (5, 15, 30, 60, 120)
 FLAT_STATS = ("mean", "std", "min", "max")
 

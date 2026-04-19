@@ -14,6 +14,7 @@ import numpy as np
 @dataclass(frozen=True)
 class RiskProfile:
     name: str
+    max_total: int
     max_per_side: int
     min_confidence: float
     min_expected_net_edge: float
@@ -25,27 +26,30 @@ class RiskProfile:
 RISK_PROFILES: dict[str, RiskProfile] = {
     "conservative": RiskProfile(
         name="conservative",
+        max_total=3,
         max_per_side=3,
-        min_confidence=0.62,
-        min_expected_net_edge=0.0015,
-        min_liquidity_score=0.65,
-        reward_cost_floor=1.8,
-        regime_floor=0.60,
+        min_confidence=0.68,
+        min_expected_net_edge=0.0020,
+        min_liquidity_score=0.70,
+        reward_cost_floor=2.0,
+        regime_floor=0.65,
     ),
     "balanced": RiskProfile(
         name="balanced",
+        max_total=5,
         max_per_side=5,
-        min_confidence=0.57,
-        min_expected_net_edge=0.0009,
-        min_liquidity_score=0.45,
-        reward_cost_floor=1.3,
-        regime_floor=0.45,
+        min_confidence=0.65,
+        min_expected_net_edge=0.0012,
+        min_liquidity_score=0.50,
+        reward_cost_floor=1.5,
+        regime_floor=0.50,
     ),
     "aggressive": RiskProfile(
         name="aggressive",
+        max_total=8,
         max_per_side=8,
-        min_confidence=0.53,
-        min_expected_net_edge=0.0004,
+        min_confidence=0.60,
+        min_expected_net_edge=0.0008,
         min_liquidity_score=0.25,
         reward_cost_floor=1.05,
         regime_floor=0.25,
@@ -144,7 +148,7 @@ def filter_for_profile(
     candidates: list[dict[str, Any]],
     profile: RiskProfile,
 ) -> dict[str, list[dict[str, Any]]]:
-    output = {"long": [], "short": []}
+    output = {"picks": [], "long": [], "short": []}
     grouped = {"LONG": [], "SHORT": []}
 
     for candidate in candidates:
@@ -160,14 +164,32 @@ def filter_for_profile(
             continue
         grouped[candidate["side"]].append(candidate)
 
-    for side, out_key in (("LONG", "long"), ("SHORT", "short")):
-        ranked = sorted(grouped[side], key=lambda item: item["score"], reverse=True)
-        limited = ranked[: profile.max_per_side]
-        for rank, item in enumerate(limited, start=1):
-            enriched = dict(item)
-            enriched["profile"] = profile.name
-            enriched["rank"] = rank
-            output[out_key].append(enriched)
+    selected: list[dict[str, Any]] = []
+    side_counts = {"LONG": 0, "SHORT": 0}
+    ranked_all = sorted(
+        grouped["LONG"] + grouped["SHORT"],
+        key=lambda item: item["score"],
+        reverse=True,
+    )
+
+    for item in ranked_all:
+        side = item["side"]
+        if side_counts[side] >= profile.max_per_side:
+            continue
+        selected.append(item)
+        side_counts[side] += 1
+        if len(selected) >= profile.max_total:
+            break
+
+    for rank, item in enumerate(selected, start=1):
+        enriched = dict(item)
+        enriched["profile"] = profile.name
+        enriched["rank"] = rank
+        output["picks"].append(enriched)
+        if item["side"] == "LONG":
+            output["long"].append(enriched)
+        else:
+            output["short"].append(enriched)
 
     return output
 

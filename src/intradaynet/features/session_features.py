@@ -1,7 +1,7 @@
 """
 Session-level context features for intraday predictions.
 
-Computes 20 features per trading session from daily data and
+Computes session context features per trading session from daily data and
 the first bars of the current session. These are static within
 a session (same value for every minute bar in a given day).
 """
@@ -33,6 +33,12 @@ SESSION_FEATURE_NAMES = [
     "days_since_52w_high",
     "days_since_52w_low",
     "avg_intraday_range",
+    "fib_382_dist_20d",
+    "fib_500_dist_20d",
+    "fib_618_dist_20d",
+    "fib_confluence_20d",
+    "prior_swing_position_20d",
+    "distance_to_nearest_fib_20d",
 ]
 
 
@@ -40,7 +46,7 @@ def compute_session_features(minute_df: pd.DataFrame) -> pd.DataFrame:
     """
     Compute session-level context features from minute data.
 
-    For each trading day, computes 20 context features from previous-day
+    For each trading day, computes context features from previous-day
     aggregates and current-day session start information.
 
     Args:
@@ -48,7 +54,7 @@ def compute_session_features(minute_df: pd.DataFrame) -> pd.DataFrame:
                    and DatetimeIndex, filtered to market hours.
 
     Returns:
-        DataFrame indexed by date with 20 feature columns.
+        DataFrame indexed by date with session feature columns.
         One row per trading session.
     """
     df = minute_df.copy()
@@ -165,6 +171,33 @@ def compute_session_features(minute_df: pd.DataFrame) -> pd.DataFrame:
     # ── 20. avg_intraday_range ──
     daily_range = (h - l) / c.replace(0, 1)
     features["avg_intraday_range"] = daily_range.rolling(20, min_periods=1).mean().fillna(0).clip(0, 0.2)
+
+    # ── 21-26. Prior-session Fibonacci context ──
+    swing_high = h.rolling(20, min_periods=20).max().shift(1)
+    swing_low = l.rolling(20, min_periods=20).min().shift(1)
+    swing_range = (swing_high - swing_low).replace(0, np.nan)
+    prev_close = c.shift(1)
+    fib_levels = {
+        "382": swing_low + swing_range * 0.382,
+        "500": swing_low + swing_range * 0.500,
+        "618": swing_low + swing_range * 0.618,
+    }
+
+    dist_columns = []
+    for label, level in fib_levels.items():
+        col = f"fib_{label}_dist_20d"
+        features[col] = ((prev_close - level) / prev_close.replace(0, np.nan)).fillna(0).clip(-0.25, 0.25)
+        dist_columns.append(col)
+
+    features["fib_confluence_20d"] = sum(
+        (features[col].abs() <= 0.005).astype(float) for col in dist_columns
+    ) / len(dist_columns)
+    features["prior_swing_position_20d"] = (
+        (prev_close - swing_low) / swing_range
+    ).fillna(0.5).clip(0, 1)
+    features["distance_to_nearest_fib_20d"] = (
+        features[dist_columns].abs().min(axis=1)
+    ).fillna(0.25).clip(0, 0.25)
 
     features = features.fillna(0.0)
     logger.debug(f"Computed {len(features.columns)} session features for {len(features)} days")
