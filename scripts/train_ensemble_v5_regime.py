@@ -97,6 +97,9 @@ for i, idx in enumerate(TOP_25_INDICES):
 
 print(f"   Regime feature indices: atr_pct={atr_pct_idx}, hour={hour_idx}")
 
+# Initialize favorable_mask as all True (no filtering by default)
+favorable_mask = np.ones(len(X), dtype=bool)
+
 # ============================================================================
 # BASE V5 PREDICTIONS
 # ============================================================================
@@ -223,8 +226,11 @@ print("=" * 80)
 print("   Favorable regime + High confidence + Moderate probability")
 
 if atr_pct_idx is not None and hour_idx is not None:
-    # Combined mask
-    combined_mask = favorable_mask & agreement_mask & (base_proba > 0.52)
+    # Combined mask (check if favorable_mask exists)
+    if 'favorable_mask' in locals():
+        combined_mask = favorable_mask & agreement_mask & (base_proba > 0.52)
+    else:
+        combined_mask = agreement_mask & (base_proba > 0.52)
     
     print(f"\n📊 Combined Filters:")
     print(f"   Favorable regime:    {favorable_mask.sum():,}")
