@@ -32,6 +32,16 @@ from intradaynet.features.sentiment_features import SentimentFeatureBuilder
 from intradaynet.open_safe_daily_features import build_open_safe_daily_features
 from intradaynet.run_logging import command_string, start_run_logging
 from intradaynet.universe import get_universe
+from intradaynet.v7 import (
+    DEFAULT_STRATEGY_PROFILES,
+    compute_trade_levels,
+    default_readiness_paths,
+    evaluate_readiness,
+    executable_edge_from_prediction,
+    load_json_if_exists,
+    margin_adjusted_confidence,
+    score_candidate,
+)
 
 console = Console()
 
@@ -56,6 +66,7 @@ class Recommendation:
     score: float
     target_price: float
     stop_loss_price: float
+    target_pct: float
     stop_loss_pct: float
 
 
@@ -265,6 +276,10 @@ def extract_post_open_session(
     return session.sort_index()
 
 
+def target_price_date(session_df: pd.DataFrame) -> pd.Timestamp:
+    return session_df.index[0].normalize()
+
+
 def compute_post_open_adjustment(
     *,
     direction: str,
@@ -272,6 +287,8 @@ def compute_post_open_adjustment(
     base_probability: float,
     predicted_magnitude: float,
     session_df: pd.DataFrame,
+    minute_df: pd.DataFrame,
+    feature_row: pd.Series,
 ) -> dict:
     if session_df.empty or prev_close <= 0:
         return {
@@ -295,20 +312,59 @@ def compute_post_open_adjustment(
     move_from_open_pct = (live_price - session_open) / max(session_open, 1e-9)
     opening_range_pct = (session_high - session_low) / max(session_open, 1e-9)
     range_width = max(session_high - session_low, 1e-9)
+    session_volume = float(session_df["volume"].sum()) if "volume" in session_df.columns else 0.0
+    session_vwap = float(
+        ((session_df["close"] * session_df["volume"]).sum() / max(session_df["volume"].sum(), 1e-9))
+        if "volume" in session_df.columns
+        else session_df["close"].mean()
+    )
+    vwap_displacement_pct = (live_price - session_vwap) / max(session_vwap, 1e-9)
+    recent_days = sorted(d for d in minute_df.index.normalize().unique() if d < target_price_date(session_df))
+    historical_opening_volumes: list[float] = []
+    for prior_day in recent_days[-10:]:
+        prior_session = minute_df[minute_df.index.normalize() == prior_day].between_time(
+            "09:15",
+            session_df.index.max().strftime("%H:%M"),
+        )
+        if not prior_session.empty and "volume" in prior_session.columns:
+            historical_opening_volumes.append(float(prior_session["volume"].sum()))
+    avg_opening_volume = float(np.mean(historical_opening_volumes)) if historical_opening_volumes else 0.0
+    early_relative_volume = session_volume / max(avg_opening_volume, 1e-9) if avg_opening_volume > 0 else 1.0
+    market_confirmation = float(
+        np.clip(
+            0.4 * feature_row.get("market_breadth", 0.0)
+            + 0.3 * feature_row.get("risk_on_signal", 0.0)
+            + 0.3 * feature_row.get("sector_relative_strength", 0.0),
+            -1.0,
+            1.0,
+        )
+    )
 
     scale = max(predicted_magnitude, 0.005)
     if direction == "LONG":
         gap_component = np.clip(gap_pct / scale, -1.0, 1.0)
         move_component = np.clip(move_from_open_pct / scale, -1.0, 1.0)
         location_component = np.clip(((live_price - session_low) / range_width) * 2.0 - 1.0, -1.0, 1.0)
+        vwap_component = np.clip(vwap_displacement_pct / scale, -1.0, 1.0)
+        confirmation_component = market_confirmation
     else:
         gap_component = np.clip((-gap_pct) / scale, -1.0, 1.0)
         move_component = np.clip((-move_from_open_pct) / scale, -1.0, 1.0)
         location_component = np.clip(((session_high - live_price) / range_width) * 2.0 - 1.0, -1.0, 1.0)
+        vwap_component = np.clip((-vwap_displacement_pct) / scale, -1.0, 1.0)
+        confirmation_component = -market_confirmation
 
-    alignment_score = float((0.30 * gap_component) + (0.50 * move_component) + (0.20 * location_component))
-    adjusted_probability = float(np.clip(base_probability + (0.12 * alignment_score), 0.0, 0.999))
-    adjusted_magnitude = float(max(predicted_magnitude * (1.0 + (0.25 * alignment_score)), 0.0))
+    relative_volume_component = np.clip((early_relative_volume - 1.0) / 1.5, -1.0, 1.0)
+    alignment_score = float(
+        (0.22 * gap_component)
+        + (0.28 * move_component)
+        + (0.16 * location_component)
+        + (0.14 * relative_volume_component)
+        + (0.10 * vwap_component)
+        + (0.10 * confirmation_component)
+    )
+    adjusted_probability = float(np.clip(base_probability + (0.10 * alignment_score), 0.0, 0.999))
+    adjusted_magnitude = float(max(predicted_magnitude * (1.0 + (0.20 * alignment_score)), 0.0))
 
     return {
         "aligned": True,
@@ -321,12 +377,14 @@ def compute_post_open_adjustment(
         "gap_pct": gap_pct,
         "move_from_open_pct": move_from_open_pct,
         "opening_range_pct": opening_range_pct,
+        "early_relative_volume": early_relative_volume,
+        "vwap_displacement_pct": vwap_displacement_pct,
     }
 
 
 def parse_args():
     parser = argparse.ArgumentParser(description="Generate morning picks from the open-safe intraday model")
-    parser.add_argument("--model", default="models/intraday_model_nifty500.pkl")
+    parser.add_argument("--model", default="results/models/models/intraday_model_nifty500.pkl")
     parser.add_argument("--universe", default="nifty500")
     parser.add_argument("--data-dir", default="nifty500")
     parser.add_argument("--target-date", default="", help="Trading date to generate picks for (YYYY-MM-DD). Defaults to today/next business day.")
@@ -338,13 +396,15 @@ def parse_args():
         default=0.05,
         help="Minimum same-day alignment score required in post-open mode.",
     )
+    parser.add_argument("--risk-profile", choices=sorted(DEFAULT_STRATEGY_PROFILES.keys()), default="balanced")
     parser.add_argument("--long-count", type=int, default=3, help="Number of long recommendations to return.")
     parser.add_argument("--short-count", type=int, default=2, help="Number of short recommendations to return.")
     parser.add_argument("--per-side", type=int, default=-1, help="Override both long and short counts with the same number.")
     parser.add_argument("--max-stocks", type=int, default=0, help="Limit number of symbols to score (0 = all).")
-    parser.add_argument("--min-confidence", type=float, default=0.65)
-    parser.add_argument("--min-predicted-magnitude", type=float, default=0.01)
-    parser.add_argument("--stop-loss-pct", type=float, default=0.01, help="Stop-loss as a fraction, e.g. 0.01 = 1%%.")
+    parser.add_argument("--min-confidence", type=float, default=-1.0)
+    parser.add_argument("--min-predicted-magnitude", type=float, default=-1.0)
+    parser.add_argument("--target-pct", type=float, default=-1.0, help="Executable target as a fraction. Defaults to the risk profile target.")
+    parser.add_argument("--stop-loss-pct", type=float, default=-1.0, help="Stop-loss as a fraction. Defaults to the risk profile stop.")
     parser.add_argument(
         "--refresh-yfinance",
         dest="refresh_yfinance",
@@ -406,14 +466,15 @@ def _build_pick(
     confidence: float,
     side_probability: float,
     predicted_magnitude: float,
+    target_pct: float,
     stop_loss_pct: float,
 ) -> Recommendation:
-    if direction == "LONG":
-        target_price = reference_price * (1 + predicted_magnitude)
-        stop_loss_price = reference_price * (1 - stop_loss_pct)
-    else:
-        target_price = reference_price * (1 - predicted_magnitude)
-        stop_loss_price = reference_price * (1 + stop_loss_pct)
+    target_price, stop_loss_price = compute_trade_levels(
+        reference_price=reference_price,
+        direction=direction,
+        target_pct=target_pct,
+        stop_loss_pct=stop_loss_pct,
+    )
     return Recommendation(
         symbol=symbol,
         direction=direction,
@@ -430,9 +491,10 @@ def _build_pick(
         confidence=round(confidence, 4),
         side_probability=round(side_probability, 4),
         predicted_magnitude=round(predicted_magnitude, 6),
-        score=round(confidence * max(predicted_magnitude, 1e-6), 6),
+        score=round(score_candidate(confidence, predicted_magnitude), 6),
         target_price=round(target_price, 2),
         stop_loss_price=round(stop_loss_price, 2),
+        target_pct=round(target_pct, 4),
         stop_loss_pct=round(stop_loss_pct, 4),
     )
 
@@ -497,6 +559,13 @@ def main() -> int:
     if args.long_count < 0 or args.short_count < 0:
         console.print("[red]long-count and short-count must be non-negative.[/red]")
         return 1
+    strategy = DEFAULT_STRATEGY_PROFILES[args.risk_profile]
+    target_pct = args.target_pct if args.target_pct > 0 else strategy.target_pct
+    stop_loss_pct = args.stop_loss_pct if args.stop_loss_pct > 0 else strategy.stop_loss_pct
+    min_confidence = args.min_confidence if args.min_confidence >= 0 else strategy.min_confidence
+    min_predicted_magnitude = (
+        args.min_predicted_magnitude if args.min_predicted_magnitude >= 0 else strategy.min_predicted_magnitude
+    )
 
     picks_for_date = pd.Timestamp(args.target_date) if args.target_date else default_target_date()
     backfill_start = (picks_for_date - pd.Timedelta(days=14)).strftime("%Y-%m-%d")
@@ -510,7 +579,8 @@ def main() -> int:
             Panel.fit(
                 "[bold cyan]IntradayNet Morning Recommender[/bold cyan]\n"
                 f"[dim]Universe: {args.universe} | Picks for: {picks_for_date.strftime('%Y-%m-%d')} | "
-                f"Longs: {args.long_count} | Shorts: {args.short_count} | Mode: {args.mode}[/dim]",
+                f"Longs: {args.long_count} | Shorts: {args.short_count} | Mode: {args.mode}[/dim]\n"
+                f"[dim]Profile: {strategy.name} | Target: {target_pct*100:.2f}% | Stop: {stop_loss_pct*100:.2f}%[/dim]",
                 border_style="cyan",
             )
         )
@@ -530,10 +600,10 @@ def main() -> int:
         market_builder = MarketFeatureBuilder()
         market_builder.download(start="2021-01-01", end=market_data_end)
 
-        sentiment_csv = Path("sentiment/combined_sentiment_2015_2025.csv")
+        sentiment_csv = Path("data/sentiment/combined_sentiment_2015_2025.csv")
         if args.augment_yf_news:
             console.print("[bold]Augmenting sentiment with yfinance news where available...[/bold]")
-            augmented_csv = PROJECT_ROOT / "sentiment" / f"combined_sentiment_augmented_for_{picks_for_date.strftime('%Y-%m-%d')}.csv"
+            augmented_csv = PROJECT_ROOT / "data" / "sentiment" / f"combined_sentiment_augmented_for_{picks_for_date.strftime('%Y-%m-%d')}.csv"
             sentiment_csv = augment_sentiment_with_yfinance(
                 symbols,
                 sentiment_csv,
@@ -611,12 +681,18 @@ def main() -> int:
                 X = last_row.reindex(columns=feature_cols, fill_value=0.0)
                 long_prob = float(models["long"].predict_proba(X)[:, 1][0])
                 short_prob = float(models["short"].predict_proba(X)[:, 1][0])
-                up_mag = float(max(models["up_mag"].predict(X)[0], 0.0))
-                down_mag = float(max(models["down_mag"].predict(X)[0], 0.0))
+                up_mag = executable_edge_from_prediction(
+                    float(max(models["up_mag"].predict(X)[0], 0.0)),
+                    target_pct=target_pct,
+                )
+                down_mag = executable_edge_from_prediction(
+                    float(max(models["down_mag"].predict(X)[0], 0.0)),
+                    target_pct=target_pct,
+                )
                 long_reference_price = last_close
                 short_reference_price = last_close
-                long_confidence = long_prob
-                short_confidence = short_prob
+                long_confidence = margin_adjusted_confidence(long_prob, short_prob)
+                short_confidence = margin_adjusted_confidence(short_prob, long_prob)
                 long_mag = up_mag
                 short_mag = down_mag
                 long_alignment_score = 0.0
@@ -631,6 +707,10 @@ def main() -> int:
                 short_session_open = None
                 long_live_price = None
                 short_live_price = None
+                row_context = last_row.iloc[0]
+                risk_on_signal = float(row_context.get("risk_on_signal", 0.0))
+                market_breadth = float(row_context.get("market_breadth", 0.0))
+                sector_relative_strength = float(row_context.get("sector_relative_strength", 0.0))
 
                 if args.mode == "post-open":
                     session_df = extract_post_open_session(minute_df, picks_for_date, args.post_open_cutoff)
@@ -645,6 +725,8 @@ def main() -> int:
                             base_probability=long_prob,
                             predicted_magnitude=up_mag,
                             session_df=session_df,
+                            minute_df=minute_df,
+                            feature_row=row_context,
                         )
                         short_adjustment = compute_post_open_adjustment(
                             direction="SHORT",
@@ -652,6 +734,8 @@ def main() -> int:
                             base_probability=short_prob,
                             predicted_magnitude=down_mag,
                             session_df=session_df,
+                            minute_df=minute_df,
+                            feature_row=row_context,
                         )
                         long_confidence = long_adjustment["adjusted_probability"]
                         short_confidence = short_adjustment["adjusted_probability"]
@@ -677,11 +761,13 @@ def main() -> int:
 
                 long_alignment_ok = True
                 short_alignment_ok = True
+                long_regime_ok = not (risk_on_signal < -0.25 and market_breadth < -0.02 and sector_relative_strength < -0.01)
+                short_regime_ok = not (risk_on_signal > 0.25 and market_breadth > 0.02 and sector_relative_strength > 0.01)
                 if args.mode == "post-open":
                     long_alignment_ok = long_gap_pct is not None and long_alignment_score >= args.post_open_min_alignment
                     short_alignment_ok = short_gap_pct is not None and short_alignment_score >= args.post_open_min_alignment
 
-                if long_confidence >= args.min_confidence and long_mag >= args.min_predicted_magnitude and long_alignment_ok:
+                if long_confidence >= min_confidence and long_mag >= min_predicted_magnitude and long_alignment_ok and long_regime_ok:
                     long_pick = _build_pick(
                         symbol=symbol,
                         direction="LONG",
@@ -698,11 +784,12 @@ def main() -> int:
                         confidence=long_confidence,
                         side_probability=long_prob,
                         predicted_magnitude=long_mag,
-                        stop_loss_pct=args.stop_loss_pct,
+                        target_pct=target_pct,
+                        stop_loss_pct=stop_loss_pct,
                     )
                     long_candidates[symbol] = long_pick
 
-                if short_confidence >= args.min_confidence and short_mag >= args.min_predicted_magnitude and short_alignment_ok:
+                if short_confidence >= min_confidence and short_mag >= min_predicted_magnitude and short_alignment_ok and short_regime_ok:
                     short_pick = _build_pick(
                         symbol=symbol,
                         direction="SHORT",
@@ -719,7 +806,8 @@ def main() -> int:
                         confidence=short_confidence,
                         side_probability=short_prob,
                         predicted_magnitude=short_mag,
-                        stop_loss_pct=args.stop_loss_pct,
+                        target_pct=target_pct,
+                        stop_loss_pct=stop_loss_pct,
                     )
                     short_candidates[symbol] = short_pick
                 progress.advance(task)
@@ -737,6 +825,8 @@ def main() -> int:
         all_picks = top_longs + top_shorts
         latest_data_date = max(latest_data_counts) if latest_data_counts else None
         symbols_on_latest_date = latest_data_counts.get(latest_data_date, 0) if latest_data_date is not None else 0
+        expected_data_date = (picks_for_date - pd.offsets.BDay(1)).normalize()
+        freshness_ok = latest_data_date is not None and latest_data_date.normalize() >= expected_data_date
 
         summary_table = Table(title="Morning Recommendation Summary")
         summary_table.add_column("Metric", style="cyan")
@@ -747,6 +837,8 @@ def main() -> int:
         summary_table.add_row("Qualified shorts", str(len(short_candidates)))
         summary_table.add_row("Returned longs", str(len(top_longs)))
         summary_table.add_row("Returned shorts", str(len(top_shorts)))
+        summary_table.add_row("Strategy target", f"{target_pct*100:.2f}%")
+        summary_table.add_row("Strategy stop", f"{stop_loss_pct*100:.2f}%")
         summary_table.add_row(
             "Latest completed data date",
             latest_data_date.strftime("%Y-%m-%d") if latest_data_date is not None else "N/A",
@@ -761,14 +853,40 @@ def main() -> int:
             summary_table.add_row("Post-open cutoff", args.post_open_cutoff)
             summary_table.add_row("Live symbols", str(post_open_symbols_with_live_data))
             summary_table.add_row("Partial live symbols", str(post_open_partial_symbols))
+        summary_table.add_row("Freshness OK", "yes" if freshness_ok else "no")
         console.print()
         console.print(summary_table)
         console.print()
+        readiness_paths = default_readiness_paths(PROJECT_ROOT)
+        readiness = evaluate_readiness(
+            locked_backtest_summary=load_json_if_exists(readiness_paths["locked_backtest"]),
+            forward_summary=load_json_if_exists(readiness_paths["forward_blind"]),
+            target_alignment=True,
+            mode=args.mode,
+            freshness_ok=freshness_ok,
+            live_symbols=post_open_symbols_with_live_data,
+            processed_symbols=processed_symbols,
+        )
+        readiness_reason_text = "\n".join(f"- {reason}" for reason in readiness.reasons[:4]) or "- All readiness checks passed."
+        readiness_style = "green" if readiness.status == "READY" else ("yellow" if readiness.status == "PAPER_ONLY" else "red")
+        console.print(
+            Panel.fit(
+                f"[bold {readiness_style}]Readiness: {readiness.status}[/bold {readiness_style}]\n{readiness_reason_text}",
+                border_style=readiness_style,
+            )
+        )
+        console.print()
+        if not freshness_ok:
+            console.print("[bold red]Fresh data coverage is not sufficient for honest recommendations.[/bold red]")
+            return 1
+        if args.mode == "post-open" and post_open_symbols_with_live_data == 0:
+            console.print("[bold red]No live post-open bars were available, so V7 is failing closed instead of inventing picks.[/bold red]")
+            return 1
         if args.mode == "post-open":
             console.print(
                 Panel.fit(
                     "[bold green]Gap-aware mode[/bold green]\n"
-                    "These picks use the previous-session model as the base signal, then rerank it with today's real gap and live opening-session bars up to the cutoff time.",
+                    "These picks use the previous-session model as the base signal, then rerank it with today's real gap, early range, relative volume, VWAP displacement, and market confirmation up to the cutoff time.",
                     border_style="green",
                 )
             )
@@ -812,15 +930,20 @@ def main() -> int:
             "generated_at": datetime.now().isoformat(timespec="seconds"),
             "picks_for_date": picks_for_date.strftime("%Y-%m-%d"),
             "model": str(model_path),
+            "target_version": model_data.get("target_version"),
+            "feature_version": model_data.get("feature_version"),
             "universe": args.universe,
             "data_dir": str(data_dir),
-            "min_confidence": args.min_confidence,
-            "min_predicted_magnitude": args.min_predicted_magnitude,
-            "stop_loss_pct": args.stop_loss_pct,
+            "risk_profile": args.risk_profile,
+            "min_confidence": min_confidence,
+            "min_predicted_magnitude": min_predicted_magnitude,
+            "target_pct": target_pct,
+            "stop_loss_pct": stop_loss_pct,
             "processed_symbols": processed_symbols,
             "skipped_symbols": skipped_symbols,
             "latest_completed_data_date": latest_data_date.strftime("%Y-%m-%d") if latest_data_date is not None else None,
             "symbols_on_latest_date": symbols_on_latest_date,
+            "freshness_ok": freshness_ok,
             "recommendation_mode": args.mode,
             "same_day_gap_aware": args.mode == "post-open",
             "post_open_cutoff": args.post_open_cutoff if args.mode == "post-open" else None,
@@ -833,6 +956,7 @@ def main() -> int:
                 "returned_longs": len(top_longs),
                 "returned_shorts": len(top_shorts),
             },
+            "readiness": readiness.to_dict(),
             "long_picks": [asdict(pick) for pick in top_longs],
             "short_picks": [asdict(pick) for pick in top_shorts],
             "run_log": str(run_logger.log_path),

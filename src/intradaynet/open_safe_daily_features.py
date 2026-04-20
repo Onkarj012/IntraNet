@@ -10,6 +10,7 @@ from intradaynet.features.sentiment_features import (
     SENTIMENT_FEATURE_NAMES,
     SentimentFeatureBuilder,
 )
+from intradaynet.v7 import FEATURE_VERSION, TARGET_VERSION, compute_directional_targets
 
 
 DAILY_FEATURE_FAMILY_PREFIXES: dict[str, tuple[str, ...]] = {
@@ -48,6 +49,11 @@ DAILY_FEATURE_FAMILY_PREFIXES: dict[str, tuple[str, ...]] = {
         "dollar_",
         "market_",
         "vix_",
+    ),
+    "cross_sectional": (
+        "sector_relative_",
+        "breadth_",
+        "volatility_normalized_",
     ),
 }
 
@@ -140,21 +146,39 @@ def build_open_safe_daily_features(
     for col in SENTIMENT_FEATURE_NAMES:
         features[col] = sentiment[col]
 
+    features["sector_relative_strength"] = (
+        features["price_momentum_5d"] - features["sector_intraday_return"]
+    ).clip(-0.25, 0.25)
+    features["breadth_momentum_confirmation"] = (
+        np.sign(features["price_momentum_5d"]).fillna(0.0) * features["market_breadth"]
+    ).clip(-1.0, 1.0)
+    features["volatility_normalized_gap"] = (
+        features["overnight_gap"] / features["prev_day_atr"].replace(0, np.nan)
+    ).clip(-5.0, 5.0)
+    features["volatility_normalized_momentum_5d"] = (
+        features["price_momentum_5d"] / features["prev_day_volatility"].replace(0, np.nan)
+    ).clip(-5.0, 5.0)
+    features["feature_version_code"] = 7.0
+
     features = features.replace([np.inf, -np.inf], np.nan)
     return features.dropna()
 
 
 def compute_intraday_targets(
     daily_df: pd.DataFrame,
-    target_pct: float = 0.01,
+    target_pct: float = 0.015,
+    min_tradable_move_pct: float = 0.0075,
+    cost_buffer_pct: float = 0.0018,
+    ambiguity_band_pct: float = 0.0025,
 ) -> pd.DataFrame:
-    targets = pd.DataFrame(index=daily_df.index)
-    targets["max_up"] = (daily_df["high"] - daily_df["open"]) / daily_df["open"]
-    targets["max_down"] = (daily_df["open"] - daily_df["low"]) / daily_df["open"]
-    targets["long_viable"] = (targets["max_up"] > target_pct).astype(int)
-    targets["short_viable"] = (targets["max_down"] > target_pct).astype(int)
-    targets["gap"] = (daily_df["open"] - daily_df["close"].shift(1)) / daily_df["close"].shift(1)
-    targets["close_return"] = (daily_df["close"] - daily_df["open"]) / daily_df["open"]
+    targets = compute_directional_targets(
+        daily_df,
+        target_pct=target_pct,
+        min_tradable_move_pct=min_tradable_move_pct,
+        cost_buffer_pct=cost_buffer_pct,
+        ambiguity_band_pct=ambiguity_band_pct,
+    )
+    targets["target_version"] = TARGET_VERSION
     return targets
 
 
@@ -183,7 +207,11 @@ def build_daily_training_frame(
 
     targets = compute_intraday_targets(daily, target_pct)
     valid_idx = features.index.intersection(targets.dropna().index)
-    return features.loc[valid_idx], targets.loc[valid_idx]
+    feature_frame = features.loc[valid_idx].copy()
+    feature_frame.attrs["feature_version"] = FEATURE_VERSION
+    targets_frame = targets.loc[valid_idx].copy()
+    targets_frame.attrs["target_version"] = TARGET_VERSION
+    return feature_frame, targets_frame
 
 
 def classify_feature_family(feature_name: str) -> str:

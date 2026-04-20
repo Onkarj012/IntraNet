@@ -34,6 +34,15 @@ from intradaynet.features.sentiment_features import SentimentFeatureBuilder
 from intradaynet.open_safe_daily_features import build_open_safe_daily_features
 from intradaynet.run_logging import command_string, start_run_logging
 from intradaynet.universe import get_universe
+from intradaynet.v7 import (
+    compute_trade_levels,
+    default_readiness_paths,
+    evaluate_readiness,
+    executable_edge_from_prediction,
+    load_json_if_exists,
+    margin_adjusted_confidence,
+    score_candidate,
+)
 
 console = Console()
 COST_PER_1L = 182.0
@@ -366,7 +375,7 @@ def maybe_backfill_with_yfinance(
 
 def parse_args():
     parser = argparse.ArgumentParser(description="Backtest intraday movement model")
-    parser.add_argument("--model", default="models/intraday_model.pkl")
+    parser.add_argument("--model", default="results/models/models/intraday_model_nifty500.pkl")
     parser.add_argument("--risk", default="balanced", choices=sorted(RISK_PROFILES.keys()))
     parser.add_argument("--universe", default="nifty100")
     parser.add_argument("--max-stocks", type=int, default=100)
@@ -428,10 +437,10 @@ def main():
 
         market_builder = MarketFeatureBuilder()
         market_builder.download(start="2021-01-01", end=args.end_date)
-        sentiment_csv = Path("sentiment/combined_sentiment_2015_2025.csv")
+        sentiment_csv = Path("data/sentiment/combined_sentiment_2015_2025.csv")
         if args.augment_yf_news:
             console.print("[bold]Augmenting sentiment with yfinance news where available...[/bold]")
-            augmented_csv = PROJECT_ROOT / "sentiment" / f"combined_sentiment_augmented_{args.start_date}_{args.end_date}.csv"
+            augmented_csv = PROJECT_ROOT / "data" / "sentiment" / f"combined_sentiment_augmented_{args.start_date}_{args.end_date}.csv"
             sentiment_csv = augment_sentiment_with_yfinance(
                 symbols,
                 sentiment_csv,
@@ -505,19 +514,33 @@ def main():
 
                     long_prob = float(long_probs[idx])
                     short_prob = float(short_probs[idx])
-                    if long_prob >= short_prob:
+                    long_confidence = margin_adjusted_confidence(long_prob, short_prob)
+                    short_confidence = margin_adjusted_confidence(short_prob, long_prob)
+                    long_edge = executable_edge_from_prediction(
+                        float(up_mags[idx]),
+                        target_pct=config.target_pct,
+                    )
+                    short_edge = executable_edge_from_prediction(
+                        float(down_mags[idx]),
+                        target_pct=config.target_pct,
+                    )
+                    long_score = score_candidate(long_confidence, long_edge)
+                    short_score = score_candidate(short_confidence, short_edge)
+
+                    if long_score >= short_score:
                         direction = "LONG"
-                        confidence = long_prob
-                        pred_mag = float(up_mags[idx])
+                        confidence = long_confidence
+                        pred_mag = long_edge
+                        score = long_score
                     else:
                         direction = "SHORT"
-                        confidence = short_prob
-                        pred_mag = float(down_mags[idx])
+                        confidence = short_confidence
+                        pred_mag = short_edge
+                        score = short_score
 
                     if confidence < min_confidence or pred_mag < min_predicted_magnitude:
                         continue
 
-                    score = confidence * max(pred_mag, 1e-6)
                     candidates_by_date[dt.normalize()].append(
                         {
                             "date": dt.normalize(),
@@ -541,20 +564,16 @@ def main():
                 if entry_price <= 0:
                     continue
                 outcome = simulate_trade(candidate["day_data"], candidate["direction"], entry_price, config, position_size)
-                predicted_target = (
-                    entry_price * (1 + candidate["predicted_magnitude"])
-                    if candidate["direction"] == "LONG"
-                    else entry_price * (1 - candidate["predicted_magnitude"])
-                )
-                stop_price = (
-                    entry_price * (1 - config.stop_loss_pct)
-                    if candidate["direction"] == "LONG"
-                    else entry_price * (1 + config.stop_loss_pct)
+                target_price, stop_price = compute_trade_levels(
+                    reference_price=entry_price,
+                    direction=candidate["direction"],
+                    target_pct=config.target_pct,
+                    stop_loss_pct=config.stop_loss_pct,
                 )
                 hit = evaluate_hit_metrics(
                     candidate["day_data"],
                     candidate["direction"],
-                    predicted_target,
+                    target_price,
                     stop_price,
                 )
                 hit_records.append(
@@ -562,7 +581,7 @@ def main():
                         "date": str(trade_date.date()),
                         "symbol": candidate["symbol"],
                         "direction": candidate["direction"],
-                        "predicted_target": round(predicted_target, 2),
+                        "predicted_target": round(target_price, 2),
                         **hit,
                     }
                 )
@@ -635,6 +654,8 @@ def main():
             "capital": args.capital,
             "top_k": max_trades_per_day,
             "position_size": position_size,
+            "target_pct": config.target_pct,
+            "stop_loss_pct": config.stop_loss_pct,
             "min_confidence": min_confidence,
             "min_predicted_magnitude": min_predicted_magnitude,
             "start_date": args.start_date,
@@ -656,6 +677,7 @@ def main():
             "expected_business_days": int(len(expected_dates)),
             "days_with_any_data": int(coverage_df["has_any_data"].sum()),
             "days_without_any_data": int((coverage_df["has_any_data"] == 0).sum()),
+            "target_alignment": True,
             "exit_reasons": by_reason,
             "run_log": str(run_logger.log_path),
             "trades_csv": str(trades_path),
@@ -663,6 +685,24 @@ def main():
             "coverage_csv": str(coverage_path),
             "sentiment_csv_used": str(sentiment_csv),
         }
+
+        readiness_paths = default_readiness_paths(PROJECT_ROOT)
+        locked_summary = summary if (
+            args.start_date == "2025-01-01" and args.end_date == "2025-12-31"
+        ) else load_json_if_exists(readiness_paths["locked_backtest"])
+        forward_summary = summary if (
+            args.start_date == "2026-01-01" and args.end_date == "2026-03-31"
+        ) else load_json_if_exists(readiness_paths["forward_blind"])
+        readiness = evaluate_readiness(
+            locked_backtest_summary=locked_summary,
+            forward_summary=forward_summary,
+            target_alignment=True,
+            mode="premarket",
+            freshness_ok=int(coverage_df["has_any_data"].sum()) >= int(len(expected_dates) * 0.85),
+            live_symbols=0,
+            processed_symbols=processed_symbols,
+        )
+        summary["readiness"] = readiness.to_dict()
 
         summary_path = output_dir / f"summary_intraday_model_{args.risk}_{args.start_date}_{args.end_date}.json"
         with open(summary_path, "w", encoding="utf-8") as f:
@@ -687,6 +727,7 @@ def main():
         summary_table.add_row("Business days", str(len(expected_dates)))
         summary_table.add_row("Days with data", str(int(coverage_df["has_any_data"].sum())))
         summary_table.add_row("Days without data", str(int((coverage_df["has_any_data"] == 0).sum())))
+        summary_table.add_row("Readiness", readiness.status)
 
         exit_table = Table(title="Exit Reasons")
         exit_table.add_column("Reason", style="cyan")
@@ -718,9 +759,17 @@ def main():
         console.print()
         console.print(sample_table)
         console.print()
+        readiness_table = Table(title="Readiness")
+        readiness_table.add_column("Check", style="cyan")
+        readiness_table.add_column("Pass", justify="right", style="green")
+        for check_name, passed in readiness.checks.items():
+            readiness_table.add_row(check_name.replace("_", " "), "yes" if passed else "no")
+        console.print(readiness_table)
+        console.print()
         console.print(
             Panel.fit(
                 f"[bold green]Backtest complete[/bold green]\n"
+                f"[bold]Readiness:[/bold] {readiness.status}\n"
                 f"[bold]Summary:[/bold] [dim]{summary_path}[/dim]\n"
                 f"[bold]Trades:[/bold] [dim]{trades_path}[/dim]\n"
                 f"[bold]Hits:[/bold] [dim]{hits_path}[/dim]\n"

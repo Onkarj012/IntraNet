@@ -26,6 +26,7 @@ def test_cli_home_lists_key_commands(monkeypatch):
     assert "IntradayNet CLI" in output
     assert "picks" in output
     assert "health" in output
+    assert "readiness" in output
     assert "uv run intradaynet" in output
 
 
@@ -84,6 +85,34 @@ def test_cli_picks_dispatches_new_recommender(monkeypatch):
         "3",
         "--short-count",
         "2",
+    ]
+
+
+def test_cli_readiness_dispatches_report(monkeypatch):
+    test_console = make_recording_console()
+    monkeypatch.setattr(cli, "console", test_console)
+
+    captured: dict[str, object] = {}
+
+    def fake_run(command, cwd, check):
+        captured["command"] = command
+        captured["cwd"] = cwd
+        captured["check"] = check
+        return SimpleNamespace(returncode=0)
+
+    monkeypatch.setattr(cli.subprocess, "run", fake_run)
+
+    exit_code = cli.main(["readiness", "--freshness-ok", "--mode", "premarket"])
+
+    assert exit_code == 0
+    assert captured["cwd"] == cli.PROJECT_ROOT
+    assert captured["check"] is False
+    assert captured["command"] == [
+        cli.sys.executable,
+        str(cli.SCRIPTS_DIR / "readiness_report.py"),
+        "--freshness-ok",
+        "--mode",
+        "premarket",
     ]
 
 

@@ -1,22 +1,5 @@
 #!/usr/bin/env python3
-"""
-Complete Intraday Movement Prediction System.
-
-Predicts intraday price movement from open:
-- Will stock move +X% above open during the day? (LONG signal)
-- Will stock move -X% below open during the day? (SHORT signal)
-
-Uses gap as a feature, not the primary target.
-
-Targets:
-1. long_viable: Can we make +target% profit from open? (binary)
-2. short_viable: Can we make -target% profit from open? (binary)
-3. max_up_move: How much does price go up from open? (regression)
-4. max_down_move: How much does price go down from open? (regression)
-
-Usage:
-    python scripts/train_intraday_model.py --target-pct 0.01
-"""
+"""Train the V7 open-safe intraday recommendation model."""
 
 import argparse
 import pickle
@@ -41,11 +24,19 @@ from intradaynet.features.market_features import MarketFeatureBuilder
 from intradaynet.features.sentiment_features import SentimentFeatureBuilder
 from intradaynet.open_safe_daily_features import build_daily_training_frame
 from intradaynet.run_logging import command_string, start_run_logging
+from intradaynet.v7 import CALIBRATION_VERSION, FEATURE_VERSION, TARGET_VERSION
 
 console = Console()
-def train_models(X: pd.DataFrame, y_long: pd.Series, y_short: pd.Series, 
-                 y_up_mag: pd.Series, y_down_mag: pd.Series) -> tuple[Dict, Dict, dict]:
-    """Train 4 models: long/short binary + magnitude regression."""
+
+
+def train_models(
+    X: pd.DataFrame,
+    y_long: pd.Series,
+    y_short: pd.Series,
+    y_up_mag: pd.Series,
+    y_down_mag: pd.Series,
+) -> tuple[Dict, Dict, dict]:
+    """Train 4 models: LONG/SHORT one-vs-rest + executable-edge regressors."""
     
     unique_dates = pd.Index(sorted(pd.to_datetime(X.index).unique()))
     split_idx = max(1, int(len(unique_dates) * 0.8))
@@ -182,7 +173,7 @@ def potential_leakage_features(feature_cols: list[str]) -> list[tuple[str, str]]
 
 def main():
     parser = argparse.ArgumentParser()
-    parser.add_argument("--target-pct", type=float, default=0.01, help="Target movement %% (e.g., 0.01 = 1%%)")
+    parser.add_argument("--target-pct", type=float, default=0.015, help="Executable target movement %% (e.g., 0.015 = 1.5%%)")
     parser.add_argument("--universe", type=str, default="nifty100")
     parser.add_argument("--output", type=str, default="models/intraday_model.pkl")
     
@@ -195,8 +186,9 @@ def main():
 
         console.print(
             Panel.fit(
-                "[bold cyan]Intraday Movement Prediction Model[/bold cyan]\n"
-                f"[dim]Target: +/-{args.target_pct*100:.1f}% from open | Universe: {args.universe}[/dim]",
+                "[bold cyan]IntradayNet V7 Training[/bold cyan]\n"
+                f"[dim]Target contract: {TARGET_VERSION} | Feature contract: {FEATURE_VERSION}[/dim]\n"
+                f"[dim]Executable target: +/-{args.target_pct*100:.1f}% | Universe: {args.universe}[/dim]",
                 border_style="cyan",
             )
         )
@@ -209,7 +201,7 @@ def main():
         market_builder.download(start="2021-01-01", end="2024-12-31")
         
         sentiment_builder = SentimentFeatureBuilder(
-            "sentiment/combined_sentiment_2015_2025.csv",
+            "data/sentiment/combined_sentiment_2015_2025.csv",
             market_builder=market_builder
         )
         sentiment_builder._load()
@@ -297,10 +289,24 @@ def main():
         stock_table.add_row("Symbols", str(X["symbol"].nunique()))
         stock_table.add_row("Date start", str(X.index.min().date()))
         stock_table.add_row("Date end", str(X.index.max().date()))
-        stock_table.add_row("Long viable rate", f"{y['long_viable'].mean():.1%}")
-        stock_table.add_row("Short viable rate", f"{y['short_viable'].mean():.1%}")
+        stock_table.add_row("LONG label rate", f"{y['long_target'].mean():.1%}")
+        stock_table.add_row("SHORT label rate", f"{y['short_target'].mean():.1%}")
+        stock_table.add_row("NO_TRADE label rate", f"{y['no_trade_target'].mean():.1%}")
+        stock_table.add_row("Avg long executable move", f"{y['long_executable_move'].mean()*100:.2f}%")
+        stock_table.add_row("Avg short executable move", f"{y['short_executable_move'].mean()*100:.2f}%")
         console.print()
         console.print(stock_table)
+
+        target_table = Table(title="Target Contract Summary")
+        target_table.add_column("Field", style="cyan")
+        target_table.add_column("Value", justify="right", style="green")
+        target_table.add_row("Target version", TARGET_VERSION)
+        target_table.add_row("Feature version", FEATURE_VERSION)
+        target_table.add_row("Confidence calibration", CALIBRATION_VERSION)
+        target_table.add_row("Executable target pct", f"{args.target_pct*100:.2f}%")
+        target_table.add_row("Trade label values", "LONG / SHORT / NO_TRADE")
+        console.print()
+        console.print(target_table)
         
         # Train models
         feature_cols = [c for c in X.columns if c != "symbol"]
@@ -316,10 +322,10 @@ def main():
 
         models, metrics, split_info = train_models(
             X[feature_cols],
-            y["long_viable"],
-            y["short_viable"],
-            y["max_up"],
-            y["max_down"]
+            y["long_target"],
+            y["short_target"],
+            y["long_executable_move"],
+            y["short_executable_move"],
         )
 
         split_table = Table(title="Temporal Split Summary")
@@ -340,9 +346,21 @@ def main():
                 "features": feature_cols,
                 "metrics": metrics,
                 "target_pct": args.target_pct,
+                "target_version": TARGET_VERSION,
+                "feature_version": FEATURE_VERSION,
+                "calibration_version": CALIBRATION_VERSION,
                 "n_samples": len(X),
                 "n_symbols": X["symbol"].nunique(),
                 "split_info": split_info,
+                "label_distribution": {
+                    "long": float(y["long_target"].mean()),
+                    "short": float(y["short_target"].mean()),
+                    "no_trade": float(y["no_trade_target"].mean()),
+                },
+                "training_window": {
+                    "start": str(X.index.min().date()),
+                    "end": str(X.index.max().date()),
+                },
                 "log_path": str(run_logger.log_path),
             }, f)
 

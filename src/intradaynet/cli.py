@@ -49,6 +49,13 @@ COMMANDS = (
         aliases=("doctor",),
     ),
     CommandSpec(
+        name="readiness",
+        script="readiness_report.py",
+        summary="Render the V7 deployability verdict from locked and forward summaries.",
+        example="uv run intradaynet readiness --freshness-ok --mode premarket",
+        aliases=("ready",),
+    ),
+    CommandSpec(
         name="sync-data",
         script="sync_data.py",
         summary="Refresh minute-level market data from upstream sources.",
