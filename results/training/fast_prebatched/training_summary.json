@@ -1,0 +1,20 @@
+{
+  "timestamp": "2026-04-19T13:45:57.826988",
+  "training_type": "fast_prebatched",
+  "prebatch_dir": "cache/prebatched_features",
+  "total_samples": 273807,
+  "unique_symbols": 499,
+  "n_features": 18,
+  "train_samples": 182155,
+  "val_samples": 27645,
+  "test_samples": 64007,
+  "test_metrics": {
+    "direction_accuracy": 0.5196150421047698,
+    "direction_auc": 0.514141216985671,
+    "direction_ece": 0.00464851667291825,
+    "brier": 0.24937081577991582,
+    "magnitude_mae": 0.00420990860379115,
+    "confidence_accuracy": 0.8846532410517599
+  },
+  "status": "COMPLETE"
+}

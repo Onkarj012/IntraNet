@@ -1,0 +1,77 @@
+{
+  "volatility": {
+    "count": {
+      "Very Low": 24,
+      "Low": 185,
+      "Medium": 1217,
+      "High": 294129
+    },
+    "accuracy": {
+      "Very Low": 0.625,
+      "Low": 0.654054054054054,
+      "Medium": 0.571076417419885,
+      "High": 0.5366454854842603
+    },
+    "avg_pred": {
+      "Very Low": 0.26500486494444164,
+      "Low": 0.35947984248022297,
+      "Medium": 0.41680892624022137,
+      "High": 0.4686633746525486
+    }
+  },
+  "trend": {
+    "count": {
+      "Downtrend": 7348,
+      "Sideways": 278758,
+      "Uptrend": 10205
+    },
+    "accuracy": {
+      "Downtrend": 0.5186445291235711,
+      "Sideways": 0.5381800701683898,
+      "Uptrend": 0.5421852033317002
+    },
+    "avg_pred": {
+      "Downtrend": 0.5149009325286638,
+      "Sideways": 0.4671482119135504,
+      "Uptrend": 0.44329285649573824
+    }
+  },
+  "time": {
+    "count": {
+      "Opening": 130476,
+      "Midday": 94715,
+      "Afternoon": 70924,
+      "Close": 196
+    },
+    "accuracy": {
+      "Opening": 0.5354471320396088,
+      "Midday": 0.5328195111650742,
+      "Afternoon": 0.5484885229259489,
+      "Close": 0.6938775510204082
+    },
+    "avg_pred": {
+      "Opening": 0.4632349834231419,
+      "Midday": 0.45968755032473124,
+      "Afternoon": 0.4858762219025869,
+      "Close": 0.4487638827206893
+    }
+  },
+  "combined": {
+    "count": {
+      "nan + Sideways": 657,
+      "Low + Sideways": 185,
+      "Medium + Sideways": 1217,
+      "High + Uptrend": 10160,
+      "High + Sideways": 276675,
+      "High + Downtrend": 7294
+    },
+    "accuracy": {
+      "nan + Sideways": 0.9665144596651446,
+      "Low + Sideways": 0.654054054054054,
+      "Medium + Sideways": 0.571076417419885,
+      "High + Uptrend": 0.5419291338582677,
+      "High + Sideways": 0.5369332249028643,
+      "High + Downtrend": 0.518371264052646
+    }
+  }
+}

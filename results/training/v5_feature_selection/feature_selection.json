@@ -1,0 +1,325 @@
+{
+  "timestamp": "2026-04-19T18:22:10.132662",
+  "total_features": 44,
+  "selected_features": 25,
+  "top_25_indices": [
+    7,
+    26,
+    35,
+    39,
+    4,
+    15,
+    11,
+    30,
+    0,
+    38,
+    25,
+    40,
+    16,
+    8,
+    14,
+    6,
+    41,
+    10,
+    19,
+    17,
+    24,
+    23,
+    5,
+    3,
+    34
+  ],
+  "top_25_names": [
+    "atr",
+    "hour",
+    "returns_5m",
+    "body_size",
+    "bb_upper",
+    "kijun_sen",
+    "williams_r",
+    "is_closing_hour",
+    "rsi",
+    "high_low_range",
+    "volume_change",
+    "upper_shadow",
+    "realized_vol_30m",
+    "atr_percent",
+    "tenkan_sen",
+    "bb_position",
+    "lower_shadow",
+    "stoch_d",
+    "garman_klass_vol",
+    "realized_vol_60m",
+    "volume_ma_ratio",
+    "price_momentum_slope",
+    "bb_lower",
+    "macd_histogram",
+    "intraday_momentum"
+  ],
+  "feature_importance": [
+    {
+      "rank": 1,
+      "feature": "atr",
+      "importance": 0.29196116791874055,
+      "selected": true
+    },
+    {
+      "rank": 2,
+      "feature": "hour",
+      "importance": 0.13965755722934442,
+      "selected": true
+    },
+    {
+      "rank": 3,
+      "feature": "returns_5m",
+      "importance": 0.08618931997451587,
+      "selected": true
+    },
+    {
+      "rank": 4,
+      "feature": "body_size",
+      "importance": 0.07889183784766476,
+      "selected": true
+    },
+    {
+      "rank": 5,
+      "feature": "bb_upper",
+      "importance": 0.04467471250918064,
+      "selected": true
+    },
+    {
+      "rank": 6,
+      "feature": "kijun_sen",
+      "importance": 0.03356276960117776,
+      "selected": true
+    },
+    {
+      "rank": 7,
+      "feature": "williams_r",
+      "importance": 0.029384941517872826,
+      "selected": true
+    },
+    {
+      "rank": 8,
+      "feature": "is_closing_hour",
+      "importance": 0.02915035986538746,
+      "selected": true
+    },
+    {
+      "rank": 9,
+      "feature": "rsi",
+      "importance": 0.0251157042539674,
+      "selected": true
+    },
+    {
+      "rank": 10,
+      "feature": "high_low_range",
+      "importance": 0.022092643002958594,
+      "selected": true
+    },
+    {
+      "rank": 11,
+      "feature": "volume_change",
+      "importance": 0.02008072645194345,
+      "selected": true
+    },
+    {
+      "rank": 12,
+      "feature": "upper_shadow",
+      "importance": 0.017698861001956202,
+      "selected": true
+    },
+    {
+      "rank": 13,
+      "feature": "realized_vol_30m",
+      "importance": 0.01768215381549421,
+      "selected": true
+    },
+    {
+      "rank": 14,
+      "feature": "atr_percent",
+      "importance": 0.01211863580362758,
+      "selected": true
+    },
+    {
+      "rank": 15,
+      "feature": "tenkan_sen",
+      "importance": 0.011303261288985449,
+      "selected": true
+    },
+    {
+      "rank": 16,
+      "feature": "bb_position",
+      "importance": 0.010548467002727203,
+      "selected": true
+    },
+    {
+      "rank": 17,
+      "feature": "lower_shadow",
+      "importance": 0.009056238520358206,
+      "selected": true
+    },
+    {
+      "rank": 18,
+      "feature": "stoch_d",
+      "importance": 0.008298698100187239,
+      "selected": true
+    },
+    {
+      "rank": 19,
+      "feature": "garman_klass_vol",
+      "importance": 0.008064036512450972,
+      "selected": true
+    },
+    {
+      "rank": 20,
+      "feature": "realized_vol_60m",
+      "importance": 0.007760639477763398,
+      "selected": true
+    },
+    {
+      "rank": 21,
+      "feature": "volume_ma_ratio",
+      "importance": 0.00771335601991144,
+      "selected": true
+    },
+    {
+      "rank": 22,
+      "feature": "price_momentum_slope",
+      "importance": 0.007503753762554359,
+      "selected": true
+    },
+    {
+      "rank": 23,
+      "feature": "bb_lower",
+      "importance": 0.007445218511497742,
+      "selected": true
+    },
+    {
+      "rank": 24,
+      "feature": "macd_histogram",
+      "importance": 0.007353390631711173,
+      "selected": true
+    },
+    {
+      "rank": 25,
+      "feature": "intraday_momentum",
+      "importance": 0.007306906020379286,
+      "selected": true
+    },
+    {
+      "rank": 26,
+      "feature": "stoch_k",
+      "importance": 0.0072966123472815074,
+      "selected": false
+    },
+    {
+      "rank": 27,
+      "feature": "macd",
+      "importance": 0.007100511755590876,
+      "selected": false
+    },
+    {
+      "rank": 28,
+      "feature": "overnight_gap",
+      "importance": 0.005889409448648036,
+      "selected": false
+    },
+    {
+      "rank": 29,
+      "feature": "vol_percentile",
+      "importance": 0.0058171966529385446,
+      "selected": false
+    },
+    {
+      "rank": 30,
+      "feature": "minute",
+      "importance": 0.005762918634758635,
+      "selected": false
+    },
+    {
+      "rank": 31,
+      "feature": "macd_signal",
+      "importance": 0.004972066306918277,
+      "selected": false
+    },
+    {
+      "rank": 32,
+      "feature": "parkinson_vol",
+      "importance": 0.003877323881334701,
+      "selected": false
+    },
+    {
+      "rank": 33,
+      "feature": "returns_10m",
+      "importance": 0.0035004667697982,
+      "selected": false
+    },
+    {
+      "rank": 34,
+      "feature": "volume_imbalance",
+      "importance": 0.0028655663304422616,
+      "selected": false
+    },
+    {
+      "rank": 35,
+      "feature": "day_of_week",
+      "importance": 0.002794743608001804,
+      "selected": false
+    },
+    {
+      "rank": 36,
+      "feature": "gap_filled",
+      "importance": 0.0024981466538620658,
+      "selected": false
+    },
+    {
+      "rank": 37,
+      "feature": "returns_30m",
+      "importance": 0.001469785107336256,
+      "selected": false
+    },
+    {
+      "rank": 38,
+      "feature": "vwap_deviation",
+      "importance": 0.0013677142880341637,
+      "selected": false
+    },
+    {
+      "rank": 39,
+      "feature": "is_opening_hour",
+      "importance": 0.0010259797322663934,
+      "selected": false
+    },
+    {
+      "rank": 40,
+      "feature": "cci",
+      "importance": 0.0009934107159697786,
+      "selected": false
+    },
+    {
+      "rank": 41,
+      "feature": "mfi",
+      "importance": 0.0008328746898389602,
+      "selected": false
+    },
+    {
+      "rank": 42,
+      "feature": "minutes_from_open",
+      "importance": 0.0007336837629336425,
+      "selected": false
+    },
+    {
+      "rank": 43,
+      "feature": "month",
+      "importance": 0.0005223276521836265,
+      "selected": false
+    },
+    {
+      "rank": 44,
+      "feature": "is_lunch_hour",
+      "importance": 6.390501950407485e-05,
+      "selected": false
+    }
+  ]
+}
