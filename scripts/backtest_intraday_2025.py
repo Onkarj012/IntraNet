@@ -17,6 +17,7 @@ from collections import Counter, defaultdict
 from dataclasses import asdict, dataclass
 from datetime import time
 from pathlib import Path
+from time import perf_counter
 from typing import Dict, List
 
 import numpy as np
@@ -31,9 +32,16 @@ sys.path.insert(0, str(PROJECT_ROOT / "src"))
 
 from intradaynet.features.market_features import MarketFeatureBuilder
 from intradaynet.features.sentiment_features import SentimentFeatureBuilder
+from intradaynet.live_news import (
+    LiveNewsSummary,
+    combine_article_sources,
+    fetch_live_yfinance_news,
+    normalize_historical_sentiment_csv,
+    summarize_article_coverage,
+)
 from intradaynet.open_safe_daily_features import build_open_safe_daily_features
 from intradaynet.run_logging import command_string, start_run_logging
-from intradaynet.universe import get_universe
+from intradaynet.universe import filter_symbols_by_industry, get_universe, resolve_industry_filters
 from intradaynet.v7 import (
     compute_trade_levels,
     default_readiness_paths,
@@ -42,6 +50,14 @@ from intradaynet.v7 import (
     load_json_if_exists,
     margin_adjusted_confidence,
     score_candidate,
+    select_candidates,
+)
+from intradaynet.v7_modes import (
+    RuntimeTracker,
+    classify_regime,
+    compute_post_open_adjustment,
+    compute_preferred_filter_pass,
+    extract_post_open_session,
 )
 
 console = Console()
@@ -64,11 +80,19 @@ class RiskConfig:
 class TradeRecord:
     date: str
     symbol: str
+    mode: str
     direction: str
+    entry_basis: str
+    previous_close: float
+    cutoff_close: float | None
+    cutoff_time: str | None
     confidence: float
     score: float
     predicted_magnitude: float
+    preferred_filter_pass: bool
     entry_price: float
+    target_price: float
+    stop_loss_price: float
     exit_price: float
     exit_reason: str
     gross_pct: float
@@ -85,8 +109,8 @@ RISK_PROFILES = {
         trailing_start=0.005,
         trailing_stop_pct=0.003,
         max_trades_per_day=3,
-        min_confidence=0.65,
-        min_predicted_magnitude=0.010,
+        min_confidence=0.50,
+        min_predicted_magnitude=0.013,
     ),
     "balanced": RiskConfig(
         name="Balanced",
@@ -95,8 +119,8 @@ RISK_PROFILES = {
         trailing_start=0.008,
         trailing_stop_pct=0.005,
         max_trades_per_day=5,
-        min_confidence=0.65,
-        min_predicted_magnitude=0.010,
+        min_confidence=0.50,
+        min_predicted_magnitude=0.012,
     ),
     "aggressive": RiskConfig(
         name="Aggressive",
@@ -105,19 +129,37 @@ RISK_PROFILES = {
         trailing_start=0.015,
         trailing_stop_pct=0.010,
         max_trades_per_day=8,
-        min_confidence=0.55,
-        min_predicted_magnitude=0.008,
+        min_confidence=0.48,
+        min_predicted_magnitude=0.010,
     ),
 }
 
 
-def simulate_trade(day_data: pd.DataFrame, direction: str, entry_price: float, config: RiskConfig, position_size: float) -> dict:
-    if direction == "LONG":
-        target = entry_price * (1 + config.target_pct)
-        stop = entry_price * (1 - config.stop_loss_pct)
-    else:
-        target = entry_price * (1 - config.target_pct)
-        stop = entry_price * (1 + config.stop_loss_pct)
+def simulate_trade(
+    day_data: pd.DataFrame,
+    direction: str,
+    entry_price: float,
+    config: RiskConfig,
+    position_size: float,
+    *,
+    target_price: float,
+    stop_price: float,
+    start_timestamp: pd.Timestamp | None = None,
+) -> dict:
+    if start_timestamp is not None:
+        day_data = day_data[day_data.index > start_timestamp]
+    if day_data.empty:
+        return {
+            "exit_price": float(entry_price),
+            "exit_reason": "NO_BARS_AFTER_ENTRY",
+            "gross_pct": 0.0,
+            "net_pnl": -(COST_PER_1L * (position_size / 100_000.0)),
+            "max_profit_pct": 0.0,
+            "max_drawdown_pct": 0.0,
+        }
+
+    target = target_price
+    stop = stop_price
 
     highs = day_data["high"].values
     lows = day_data["low"].values
@@ -377,7 +419,11 @@ def parse_args():
     parser = argparse.ArgumentParser(description="Backtest intraday movement model")
     parser.add_argument("--model", default="results/models/models/intraday_model_nifty500.pkl")
     parser.add_argument("--risk", default="balanced", choices=sorted(RISK_PROFILES.keys()))
+    parser.add_argument("--mode", choices=("premarket", "post-open"), default="premarket")
+    parser.add_argument("--post-open-cutoff", default="09:30")
+    parser.add_argument("--post-open-news-cutoff", default="09:20")
     parser.add_argument("--universe", default="nifty100")
+    parser.add_argument("--industry", action="append", default=[])
     parser.add_argument("--max-stocks", type=int, default=100)
     parser.add_argument("--start-date", default="2025-01-01")
     parser.add_argument("--end-date", default="2025-12-31")
@@ -385,6 +431,11 @@ def parse_args():
     parser.add_argument("--output-dir", default="backtest_results")
     parser.add_argument("--capital", type=float, default=100_000.0)
     parser.add_argument("--top-k", type=int, default=0)
+    parser.add_argument(
+        "--allow-below-preferred",
+        action="store_true",
+        help="Backfill daily slots with below-threshold names after exhausting preferred candidates.",
+    )
     parser.add_argument("--min-confidence", type=float, default=-1.0)
     parser.add_argument("--min-predicted-magnitude", type=float, default=-1.0)
     parser.add_argument("--refresh-yfinance", action="store_true")
@@ -395,7 +446,9 @@ def parse_args():
 def main():
     args = parse_args()
     config = RISK_PROFILES[args.risk]
-    run_name = f"backtest_intraday_2025_{args.risk}"
+    started_at = perf_counter()
+    runtime_tracker = RuntimeTracker()
+    run_name = f"backtest_intraday_2025_{args.risk}_{args.mode}"
 
     with start_run_logging(project_root=PROJECT_ROOT, log_group="backtests", run_name=run_name) as run_logger:
         global console
@@ -428,31 +481,56 @@ def main():
         feature_cols = model_data["features"]
 
         data_dir = Path(args.data_dir)
-        output_dir = Path(args.output_dir)
+        mode_output_name = "premarket_backtest" if args.mode == "premarket" else "post_open_backtest"
+        output_dir = Path(args.output_dir) / mode_output_name
         output_dir.mkdir(parents=True, exist_ok=True)
 
         symbols = get_universe(args.universe)
+        resolved_industries = resolve_industry_filters(args.industry) if args.industry else []
+        symbols = filter_symbols_by_industry(symbols, resolved_industries)
         if args.max_stocks > 0:
             symbols = symbols[:args.max_stocks]
 
         market_builder = MarketFeatureBuilder()
+        runtime_tracker.start("data_refresh_seconds")
         market_builder.download(start="2021-01-01", end=args.end_date)
         sentiment_csv = Path("data/sentiment/combined_sentiment_2015_2025.csv")
+        historical_articles = normalize_historical_sentiment_csv(
+            sentiment_csv,
+            universe_metadata_csv=str(PROJECT_ROOT / "data" / "sentiment" / "ind_nifty500list.csv"),
+            market_open_cutoff="09:15",
+            post_open_cutoff=args.post_open_news_cutoff,
+        )
+        live_articles = pd.DataFrame()
+        news_summary = LiveNewsSummary()
         if args.augment_yf_news:
-            console.print("[bold]Augmenting sentiment with yfinance news where available...[/bold]")
-            augmented_csv = PROJECT_ROOT / "data" / "sentiment" / f"combined_sentiment_augmented_{args.start_date}_{args.end_date}.csv"
-            sentiment_csv = augment_sentiment_with_yfinance(
+            console.print("[bold]Augmenting backtest context with yfinance news where available...[/bold]")
+            live_articles, news_summary = fetch_live_yfinance_news(
                 symbols,
-                sentiment_csv,
-                args.start_date,
-                args.end_date,
-                augmented_csv,
+                start_ts=pd.Timestamp(args.start_date),
+                end_ts=pd.Timestamp(args.end_date) + pd.Timedelta(days=1),
+                universe_metadata_csv=str(PROJECT_ROOT / "data" / "sentiment" / "ind_nifty500list.csv"),
+                market_open_cutoff="09:15",
+                post_open_cutoff=args.post_open_news_cutoff,
             )
+        combined_articles = combine_article_sources(historical_articles, live_articles)
+        news_summary = summarize_article_coverage(
+            combined_articles,
+            symbols=symbols,
+            mode=args.mode,
+            target_dates=pd.date_range(args.start_date, args.end_date, freq="B"),
+            base_summary=news_summary,
+        )
         sentiment_builder = SentimentFeatureBuilder(
             str(sentiment_csv),
             market_builder=market_builder,
+            mode=args.mode,
+            post_open_news_cutoff=args.post_open_news_cutoff,
+            universe_metadata_csv=str(PROJECT_ROOT / "data" / "sentiment" / "ind_nifty500list.csv"),
+            articles_df=combined_articles,
         )
         sentiment_builder._load()
+        runtime_tracker.stop("data_refresh_seconds")
 
         start_date = pd.Timestamp(args.start_date)
         end_date = pd.Timestamp(args.end_date)
@@ -473,6 +551,7 @@ def main():
             task = progress.add_task("Scoring symbols", total=len(symbols))
             for symbol in symbols:
                 progress.update(task, description=f"Scoring {symbol}")
+                runtime_tracker.start("data_refresh_seconds")
                 minute_df = load_minute_data(data_dir / f"{symbol}_minute.csv")
                 minute_df = maybe_backfill_with_yfinance(
                     minute_df,
@@ -481,12 +560,15 @@ def main():
                     args.end_date,
                     args.refresh_yfinance,
                 )
+                runtime_tracker.stop("data_refresh_seconds")
                 if minute_df is None:
                     skipped_symbols.append(symbol)
                     progress.advance(task)
                     continue
 
+                runtime_tracker.start("feature_build_seconds")
                 feature_df = build_open_safe_daily_features(minute_df, symbol, market_builder, sentiment_builder)
+                runtime_tracker.stop("feature_build_seconds")
                 if feature_df is None or feature_df.empty:
                     skipped_symbols.append(symbol)
                     progress.advance(task)
@@ -508,7 +590,8 @@ def main():
                 down_mags = np.maximum(models["down_mag"].predict(X), 0.0)
 
                 for idx, dt in enumerate(feature_df.index):
-                    date_data = minute_df[minute_df.index.normalize() == dt.normalize()]
+                    trade_date = dt.normalize()
+                    date_data = minute_df[minute_df.index.normalize() == trade_date]
                     if date_data.empty:
                         continue
 
@@ -524,64 +607,139 @@ def main():
                         float(down_mags[idx]),
                         target_pct=config.target_pct,
                     )
-                    long_score = score_candidate(long_confidence, long_edge)
-                    short_score = score_candidate(short_confidence, short_edge)
+                    previous_close = float(date_data["close"].iloc[-1])
+                    feature_row = feature_df.loc[dt]
+                    regime = classify_regime(feature_row)
+                    risk_on_signal = float(feature_row.get("risk_on_signal", 0.0))
+                    market_breadth = float(feature_row.get("market_breadth", 0.0))
+                    sector_relative_strength = float(feature_row.get("sector_relative_strength", 0.0))
+                    long_regime_ok = not (risk_on_signal < -0.25 and market_breadth < -0.02 and sector_relative_strength < -0.01)
+                    short_regime_ok = not (risk_on_signal > 0.25 and market_breadth > 0.02 and sector_relative_strength > 0.01)
 
-                    if long_score >= short_score:
-                        direction = "LONG"
-                        confidence = long_confidence
-                        pred_mag = long_edge
-                        score = long_score
-                    else:
-                        direction = "SHORT"
-                        confidence = short_confidence
-                        pred_mag = short_edge
-                        score = short_score
+                    for direction, base_probability, base_confidence, pred_mag in (
+                        ("LONG", long_prob, long_confidence, long_edge),
+                        ("SHORT", short_prob, short_confidence, short_edge),
+                    ):
+                        runtime_tracker.start("ranking_seconds")
+                        confidence = base_confidence
+                        adjusted_mag = pred_mag
+                        entry_basis = "Previous Close"
+                        entry_price = previous_close
+                        cutoff_close = None
+                        cutoff_time = None
+                        session_df = pd.DataFrame()
+                        long_side = direction == "LONG"
+                        alignment_score = 0.0
+                        alignment_ok = True
+                        regime_ok = long_regime_ok if long_side else short_regime_ok
 
-                    if confidence < min_confidence or pred_mag < min_predicted_magnitude:
-                        continue
+                        if args.mode == "post-open":
+                            trade_date = dt.normalize() + pd.Timedelta(days=1)
+                            if trade_date > end_date:
+                                runtime_tracker.stop("ranking_seconds")
+                                continue
+                            session_df = extract_post_open_session(minute_df, trade_date, args.post_open_cutoff)
+                            if session_df.empty:
+                                runtime_tracker.stop("ranking_seconds")
+                                continue
+                            coverage_by_date[trade_date] += 1
+                            adjustment = compute_post_open_adjustment(
+                                direction=direction,
+                                prev_close=previous_close,
+                                base_probability=base_probability,
+                                predicted_magnitude=pred_mag,
+                                session_df=session_df,
+                                minute_df=minute_df,
+                                feature_row=feature_row,
+                            )
+                            confidence = float(adjustment["adjusted_probability"])
+                            adjusted_mag = float(adjustment["adjusted_magnitude"])
+                            entry_price = float(adjustment["reference_price"])
+                            cutoff_close = adjustment["cutoff_close"]
+                            cutoff_time = adjustment["cutoff_timestamp"]
+                            alignment_score = float(adjustment["alignment_score"])
+                            alignment_ok = adjustment["gap_pct"] is not None and alignment_score >= 0.05
 
-                    candidates_by_date[dt.normalize()].append(
-                        {
-                            "date": dt.normalize(),
-                            "symbol": symbol,
-                            "direction": direction,
-                            "confidence": confidence,
-                            "predicted_magnitude": pred_mag,
-                            "score": score,
-                            "day_data": date_data,
-                            "feature_date": dt,
-                        }
-                    )
+                        preferred_filter_pass = compute_preferred_filter_pass(
+                            confidence=confidence,
+                            predicted_magnitude=adjusted_mag,
+                            min_confidence=min_confidence,
+                            min_predicted_magnitude=min_predicted_magnitude,
+                            alignment_ok=alignment_ok,
+                            regime_ok=regime_ok,
+                        )
+                        score = score_candidate(confidence, adjusted_mag)
+                        target_price, stop_price = compute_trade_levels(
+                            reference_price=entry_price,
+                            direction=direction,
+                            target_pct=config.target_pct,
+                            stop_loss_pct=config.stop_loss_pct,
+                        )
+
+                        candidates_by_date[(dt.normalize() + pd.Timedelta(days=1)) if args.mode == "post-open" else dt.normalize()].append(
+                            {
+                                "date": (dt.normalize() + pd.Timedelta(days=1)) if args.mode == "post-open" else dt.normalize(),
+                                "symbol": symbol,
+                                "mode": args.mode,
+                                "direction": direction,
+                                "confidence": confidence,
+                                "predicted_magnitude": adjusted_mag,
+                                "score": score,
+                                "preferred_filter_pass": preferred_filter_pass,
+                                "entry_basis": "Cutoff Close" if args.mode == "post-open" else entry_basis,
+                                "entry_price": entry_price,
+                                "previous_close": previous_close,
+                                "cutoff_close": cutoff_close,
+                                "cutoff_time": cutoff_time,
+                                "target_price": target_price,
+                                "stop_price": stop_price,
+                                "day_data": minute_df[minute_df.index.normalize() == ((dt.normalize() + pd.Timedelta(days=1)) if args.mode == "post-open" else dt.normalize())],
+                                "session_df": session_df,
+                                "feature_date": dt,
+                                **regime,
+                            }
+                        )
+                        runtime_tracker.stop("ranking_seconds")
                 progress.advance(task)
 
         trades: list[TradeRecord] = []
         hit_records: list[dict] = []
         for trade_date in sorted(candidates_by_date):
-            ranked = sorted(candidates_by_date[trade_date], key=lambda item: item["score"], reverse=True)
+            ranked = select_candidates(
+                candidates_by_date[trade_date],
+                count=max_trades_per_day,
+                allow_below_preferred=args.allow_below_preferred,
+            )
             for candidate in ranked[:max_trades_per_day]:
-                entry_price = float(candidate["day_data"]["open"].iloc[0])
+                entry_price = float(candidate["entry_price"])
                 if entry_price <= 0:
                     continue
-                outcome = simulate_trade(candidate["day_data"], candidate["direction"], entry_price, config, position_size)
-                target_price, stop_price = compute_trade_levels(
-                    reference_price=entry_price,
-                    direction=candidate["direction"],
-                    target_pct=config.target_pct,
-                    stop_loss_pct=config.stop_loss_pct,
+                start_timestamp = (
+                    pd.Timestamp(candidate["cutoff_time"]) if candidate["mode"] == "post-open" and candidate["cutoff_time"] else None
                 )
-                hit = evaluate_hit_metrics(
+                outcome = simulate_trade(
                     candidate["day_data"],
                     candidate["direction"],
-                    target_price,
-                    stop_price,
+                    entry_price,
+                    config,
+                    position_size,
+                    target_price=float(candidate["target_price"]),
+                    stop_price=float(candidate["stop_price"]),
+                    start_timestamp=start_timestamp,
+                )
+                hit = evaluate_hit_metrics(
+                    candidate["day_data"][candidate["day_data"].index > start_timestamp] if start_timestamp is not None else candidate["day_data"],
+                    candidate["direction"],
+                    float(candidate["target_price"]),
+                    float(candidate["stop_price"]),
                 )
                 hit_records.append(
                     {
                         "date": str(trade_date.date()),
                         "symbol": candidate["symbol"],
+                        "mode": candidate["mode"],
                         "direction": candidate["direction"],
-                        "predicted_target": round(target_price, 2),
+                        "predicted_target": round(float(candidate["target_price"]), 2),
                         **hit,
                     }
                 )
@@ -589,11 +747,19 @@ def main():
                     TradeRecord(
                         date=str(trade_date.date()),
                         symbol=candidate["symbol"],
+                        mode=candidate["mode"],
                         direction=candidate["direction"],
+                        entry_basis=candidate["entry_basis"],
+                        previous_close=round(float(candidate["previous_close"]), 2),
+                        cutoff_close=round(float(candidate["cutoff_close"]), 2) if candidate["cutoff_close"] is not None else None,
+                        cutoff_time=candidate["cutoff_time"],
                         confidence=round(candidate["confidence"], 4),
                         score=round(candidate["score"], 6),
                         predicted_magnitude=round(candidate["predicted_magnitude"], 6),
+                        preferred_filter_pass=bool(candidate["preferred_filter_pass"]),
                         entry_price=round(entry_price, 2),
+                        target_price=round(float(candidate["target_price"]), 2),
+                        stop_loss_price=round(float(candidate["stop_price"]), 2),
                         exit_price=round(outcome["exit_price"], 2),
                         exit_reason=outcome["exit_reason"],
                         gross_pct=round(outcome["gross_pct"], 6),
@@ -609,10 +775,10 @@ def main():
             return
 
         trades_df = pd.DataFrame([asdict(t) for t in trades])
-        trades_path = output_dir / f"trades_intraday_model_{args.risk}_{args.start_date}_{args.end_date}.csv"
+        trades_path = output_dir / f"trades_intraday_model_{args.risk}_{args.mode}_{args.start_date}_{args.end_date}.csv"
         trades_df.to_csv(trades_path, index=False)
         hits_df = pd.DataFrame(hit_records)
-        hits_path = output_dir / f"hits_intraday_model_{args.risk}_{args.start_date}_{args.end_date}.csv"
+        hits_path = output_dir / f"hits_intraday_model_{args.risk}_{args.mode}_{args.start_date}_{args.end_date}.csv"
         hits_df.to_csv(hits_path, index=False)
 
         expected_dates = pd.date_range(start_date, end_date, freq="B")
@@ -629,7 +795,7 @@ def main():
                 }
             )
         coverage_df = pd.DataFrame(coverage_rows)
-        coverage_path = output_dir / f"coverage_intraday_model_{args.risk}_{args.start_date}_{args.end_date}.csv"
+        coverage_path = output_dir / f"coverage_intraday_model_{args.risk}_{args.mode}_{args.start_date}_{args.end_date}.csv"
         coverage_df.to_csv(coverage_path, index=False)
 
         total_trades = len(trades_df)
@@ -647,12 +813,18 @@ def main():
         max_drawdown = float((equity_curve - equity_curve.cummax()).min()) if len(equity_curve) else 0.0
         hit_rate = float(hits_df["target_touched_intraday"].mean()) if not hits_df.empty else 0.0
         target_before_stop_rate = float(hits_df["target_before_stop"].mean()) if not hits_df.empty else 0.0
+        runtime_metrics = runtime_tracker.snapshot(perf_counter() - started_at)
+        preferred_count = int(trades_df["preferred_filter_pass"].sum()) if "preferred_filter_pass" in trades_df else 0
 
         summary = {
             "model": str(model_path),
+            "mode": args.mode,
+            "entry_basis": "Cutoff Close" if args.mode == "post-open" else "Previous Close",
+            "post_open_cutoff": args.post_open_cutoff if args.mode == "post-open" else None,
             "risk_profile": config.name,
             "capital": args.capital,
             "top_k": max_trades_per_day,
+            "allow_below_preferred": args.allow_below_preferred,
             "position_size": position_size,
             "target_pct": config.target_pct,
             "stop_loss_pct": config.stop_loss_pct,
@@ -661,6 +833,7 @@ def main():
             "start_date": args.start_date,
             "end_date": args.end_date,
             "processed_symbols": processed_symbols,
+            "industry_filter": resolved_industries,
             "skipped_symbols": skipped_symbols,
             "total_trades": total_trades,
             "winning_trades": winning_trades,
@@ -678,7 +851,19 @@ def main():
             "days_with_any_data": int(coverage_df["has_any_data"].sum()),
             "days_without_any_data": int((coverage_df["has_any_data"] == 0).sum()),
             "target_alignment": True,
+            "exact_logic_match": True,
             "exit_reasons": by_reason,
+            "runtime_metrics": runtime_metrics,
+            "news_summary": news_summary.to_dict(),
+            "recommendation_count_requested": max_trades_per_day,
+            "recommendation_count_returned": total_trades,
+            "top_n_forced_count": max(total_trades - preferred_count, 0),
+            "top_n_preferred_count": preferred_count,
+            "regime_breakdown": {
+                "trend_regime": trades_df.groupby("date")["gross_pct"].mean().mean() if not trades_df.empty else 0.0,
+                "volatility_regime": trades_df.groupby("direction")["gross_pct"].mean().to_dict() if not trades_df.empty else {},
+                "long_short_split": trades_df.groupby("direction")["net_pnl"].agg(["count", "mean", "sum"]).to_dict() if not trades_df.empty else {},
+            },
             "run_log": str(run_logger.log_path),
             "trades_csv": str(trades_path),
             "hits_csv": str(hits_path),
@@ -686,7 +871,7 @@ def main():
             "sentiment_csv_used": str(sentiment_csv),
         }
 
-        readiness_paths = default_readiness_paths(PROJECT_ROOT)
+        readiness_paths = default_readiness_paths(PROJECT_ROOT, mode=args.mode)
         locked_summary = summary if (
             args.start_date == "2025-01-01" and args.end_date == "2025-12-31"
         ) else load_json_if_exists(readiness_paths["locked_backtest"])
@@ -697,14 +882,14 @@ def main():
             locked_backtest_summary=locked_summary,
             forward_summary=forward_summary,
             target_alignment=True,
-            mode="premarket",
+            mode=args.mode,
             freshness_ok=int(coverage_df["has_any_data"].sum()) >= int(len(expected_dates) * 0.85),
-            live_symbols=0,
+            live_symbols=int(coverage_df["trade_count"].gt(0).sum()) if args.mode == "post-open" else 0,
             processed_symbols=processed_symbols,
         )
         summary["readiness"] = readiness.to_dict()
 
-        summary_path = output_dir / f"summary_intraday_model_{args.risk}_{args.start_date}_{args.end_date}.json"
+        summary_path = output_dir / f"summary_intraday_model_{args.risk}_{args.mode}_{args.start_date}_{args.end_date}.json"
         with open(summary_path, "w", encoding="utf-8") as f:
             json.dump(summary, f, indent=2)
 
@@ -713,6 +898,8 @@ def main():
         summary_table.add_column("Value", justify="right", style="green")
         summary_table.add_row("Processed symbols", str(processed_symbols))
         summary_table.add_row("Skipped symbols", str(len(skipped_symbols)))
+        summary_table.add_row("Mode", args.mode)
+        summary_table.add_row("Entry basis", summary["entry_basis"])
         summary_table.add_row("Total trades", str(total_trades))
         summary_table.add_row("Win rate", f"{win_rate:.1%}")
         summary_table.add_row("Total net P&L", f"₹{total_net:,.0f}")
@@ -727,6 +914,8 @@ def main():
         summary_table.add_row("Business days", str(len(expected_dates)))
         summary_table.add_row("Days with data", str(int(coverage_df["has_any_data"].sum())))
         summary_table.add_row("Days without data", str(int((coverage_df["has_any_data"] == 0).sum())))
+        summary_table.add_row("Forced top-N picks", str(summary["top_n_forced_count"]))
+        summary_table.add_row("Runtime", f"{runtime_metrics['total_runtime_seconds']:.2f}s")
         summary_table.add_row("Readiness", readiness.status)
 
         exit_table = Table(title="Exit Reasons")

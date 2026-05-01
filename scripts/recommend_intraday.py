@@ -16,6 +16,7 @@ import sys
 from dataclasses import asdict, dataclass
 from datetime import datetime, timedelta
 from pathlib import Path
+from time import perf_counter
 
 import numpy as np
 import pandas as pd
@@ -29,18 +30,34 @@ sys.path.insert(0, str(PROJECT_ROOT / "src"))
 
 from intradaynet.features.market_features import MarketFeatureBuilder
 from intradaynet.features.sentiment_features import SentimentFeatureBuilder
+from intradaynet.live_news import (
+    LiveNewsSummary,
+    combine_article_sources,
+    fetch_live_yfinance_news,
+    normalize_historical_sentiment_csv,
+    summarize_article_coverage,
+)
 from intradaynet.open_safe_daily_features import build_open_safe_daily_features
 from intradaynet.run_logging import command_string, start_run_logging
-from intradaynet.universe import get_universe
+from intradaynet.universe import filter_symbols_by_industry, get_universe, resolve_industry_filters
 from intradaynet.v7 import (
     DEFAULT_STRATEGY_PROFILES,
     compute_trade_levels,
     default_readiness_paths,
     evaluate_readiness,
     executable_edge_from_prediction,
+    feature_staleness_bdays,
     load_json_if_exists,
     margin_adjusted_confidence,
     score_candidate,
+    select_candidates,
+)
+from intradaynet.v7_modes import (
+    RuntimeTracker,
+    compute_post_open_adjustment,
+    compute_preferred_filter_pass,
+    extract_post_open_session,
+    session_cutoff_timestamp,
 )
 
 console = Console()
@@ -53,8 +70,12 @@ class Recommendation:
     data_through_date: str
     picks_for_date: str
     mode: str
+    entry_basis: str
+    entry_price: float
     reference_price: float
     previous_close: float
+    cutoff_close: float | None
+    cutoff_timestamp: str | None
     session_open: float | None
     live_price: float | None
     gap_pct: float | None
@@ -68,6 +89,7 @@ class Recommendation:
     stop_loss_price: float
     target_pct: float
     stop_loss_pct: float
+    preferred_filter_pass: bool
 
 
 def _infer_title_sentiment(text: str) -> float:
@@ -264,124 +286,6 @@ def default_target_date() -> pd.Timestamp:
     return dt
 
 
-def extract_post_open_session(
-    minute_df: pd.DataFrame,
-    target_date: pd.Timestamp,
-    cutoff_time: str,
-) -> pd.DataFrame:
-    session = minute_df[minute_df.index.normalize() == target_date.normalize()].copy()
-    if session.empty:
-        return session
-    session = session.between_time("09:15", cutoff_time)
-    return session.sort_index()
-
-
-def target_price_date(session_df: pd.DataFrame) -> pd.Timestamp:
-    return session_df.index[0].normalize()
-
-
-def compute_post_open_adjustment(
-    *,
-    direction: str,
-    prev_close: float,
-    base_probability: float,
-    predicted_magnitude: float,
-    session_df: pd.DataFrame,
-    minute_df: pd.DataFrame,
-    feature_row: pd.Series,
-) -> dict:
-    if session_df.empty or prev_close <= 0:
-        return {
-            "aligned": False,
-            "alignment_score": -1.0,
-            "adjusted_probability": base_probability,
-            "adjusted_magnitude": predicted_magnitude,
-            "reference_price": prev_close,
-            "session_open": None,
-            "live_price": None,
-            "gap_pct": None,
-            "move_from_open_pct": None,
-            "opening_range_pct": None,
-        }
-
-    session_open = float(session_df["open"].iloc[0])
-    live_price = float(session_df["close"].iloc[-1])
-    session_high = float(session_df["high"].max())
-    session_low = float(session_df["low"].min())
-    gap_pct = (session_open - prev_close) / prev_close
-    move_from_open_pct = (live_price - session_open) / max(session_open, 1e-9)
-    opening_range_pct = (session_high - session_low) / max(session_open, 1e-9)
-    range_width = max(session_high - session_low, 1e-9)
-    session_volume = float(session_df["volume"].sum()) if "volume" in session_df.columns else 0.0
-    session_vwap = float(
-        ((session_df["close"] * session_df["volume"]).sum() / max(session_df["volume"].sum(), 1e-9))
-        if "volume" in session_df.columns
-        else session_df["close"].mean()
-    )
-    vwap_displacement_pct = (live_price - session_vwap) / max(session_vwap, 1e-9)
-    recent_days = sorted(d for d in minute_df.index.normalize().unique() if d < target_price_date(session_df))
-    historical_opening_volumes: list[float] = []
-    for prior_day in recent_days[-10:]:
-        prior_session = minute_df[minute_df.index.normalize() == prior_day].between_time(
-            "09:15",
-            session_df.index.max().strftime("%H:%M"),
-        )
-        if not prior_session.empty and "volume" in prior_session.columns:
-            historical_opening_volumes.append(float(prior_session["volume"].sum()))
-    avg_opening_volume = float(np.mean(historical_opening_volumes)) if historical_opening_volumes else 0.0
-    early_relative_volume = session_volume / max(avg_opening_volume, 1e-9) if avg_opening_volume > 0 else 1.0
-    market_confirmation = float(
-        np.clip(
-            0.4 * feature_row.get("market_breadth", 0.0)
-            + 0.3 * feature_row.get("risk_on_signal", 0.0)
-            + 0.3 * feature_row.get("sector_relative_strength", 0.0),
-            -1.0,
-            1.0,
-        )
-    )
-
-    scale = max(predicted_magnitude, 0.005)
-    if direction == "LONG":
-        gap_component = np.clip(gap_pct / scale, -1.0, 1.0)
-        move_component = np.clip(move_from_open_pct / scale, -1.0, 1.0)
-        location_component = np.clip(((live_price - session_low) / range_width) * 2.0 - 1.0, -1.0, 1.0)
-        vwap_component = np.clip(vwap_displacement_pct / scale, -1.0, 1.0)
-        confirmation_component = market_confirmation
-    else:
-        gap_component = np.clip((-gap_pct) / scale, -1.0, 1.0)
-        move_component = np.clip((-move_from_open_pct) / scale, -1.0, 1.0)
-        location_component = np.clip(((session_high - live_price) / range_width) * 2.0 - 1.0, -1.0, 1.0)
-        vwap_component = np.clip((-vwap_displacement_pct) / scale, -1.0, 1.0)
-        confirmation_component = -market_confirmation
-
-    relative_volume_component = np.clip((early_relative_volume - 1.0) / 1.5, -1.0, 1.0)
-    alignment_score = float(
-        (0.22 * gap_component)
-        + (0.28 * move_component)
-        + (0.16 * location_component)
-        + (0.14 * relative_volume_component)
-        + (0.10 * vwap_component)
-        + (0.10 * confirmation_component)
-    )
-    adjusted_probability = float(np.clip(base_probability + (0.10 * alignment_score), 0.0, 0.999))
-    adjusted_magnitude = float(max(predicted_magnitude * (1.0 + (0.20 * alignment_score)), 0.0))
-
-    return {
-        "aligned": True,
-        "alignment_score": alignment_score,
-        "adjusted_probability": adjusted_probability,
-        "adjusted_magnitude": adjusted_magnitude,
-        "reference_price": live_price,
-        "session_open": session_open,
-        "live_price": live_price,
-        "gap_pct": gap_pct,
-        "move_from_open_pct": move_from_open_pct,
-        "opening_range_pct": opening_range_pct,
-        "early_relative_volume": early_relative_volume,
-        "vwap_displacement_pct": vwap_displacement_pct,
-    }
-
-
 def parse_args():
     parser = argparse.ArgumentParser(description="Generate morning picks from the open-safe intraday model")
     parser.add_argument("--model", default="results/models/models/intraday_model_nifty500.pkl")
@@ -390,6 +294,11 @@ def parse_args():
     parser.add_argument("--target-date", default="", help="Trading date to generate picks for (YYYY-MM-DD). Defaults to today/next business day.")
     parser.add_argument("--mode", choices=("premarket", "post-open"), default="premarket")
     parser.add_argument("--post-open-cutoff", default="09:30", help="Use bars up to this market time in post-open mode.")
+    parser.add_argument(
+        "--post-open-news-cutoff",
+        default="09:20",
+        help="Latest news timestamp to include for post-open runs (HH:MM).",
+    )
     parser.add_argument(
         "--post-open-min-alignment",
         type=float,
@@ -401,6 +310,23 @@ def parse_args():
     parser.add_argument("--short-count", type=int, default=2, help="Number of short recommendations to return.")
     parser.add_argument("--per-side", type=int, default=-1, help="Override both long and short counts with the same number.")
     parser.add_argument("--max-stocks", type=int, default=0, help="Limit number of symbols to score (0 = all).")
+    parser.add_argument(
+        "--industry",
+        action="append",
+        default=[],
+        help="Filter the recommendation universe to one or more CSV industry values. Repeat or use comma-separated values.",
+    )
+    parser.add_argument(
+        "--allow-below-preferred",
+        action="store_true",
+        help="Backfill requested slots with below-threshold names after exhausting preferred picks.",
+    )
+    parser.add_argument(
+        "--max-feature-staleness-bdays",
+        type=int,
+        default=0,
+        help="Maximum business-day lag allowed between the latest symbol feature row and the expected pre-pick feature date.",
+    )
     parser.add_argument("--min-confidence", type=float, default=-1.0)
     parser.add_argument("--min-predicted-magnitude", type=float, default=-1.0)
     parser.add_argument("--target-pct", type=float, default=-1.0, help="Executable target as a fraction. Defaults to the risk profile target.")
@@ -419,17 +345,26 @@ def parse_args():
         help="Disable yfinance price backfill and use only local market data.",
     )
     parser.add_argument(
-        "--augment-yf-news",
-        dest="augment_yf_news",
+        "--disable-live-news",
         action="store_true",
-        default=True,
-        help="Augment sentiment data with yfinance news where available. Enabled by default.",
+        help="Disable live yfinance news and rely on historical/fallback sentiment only.",
+    )
+    parser.add_argument(
+        "--augment-yf-news",
+        dest="disable_live_news",
+        action="store_false",
+        help=argparse.SUPPRESS,
     )
     parser.add_argument(
         "--no-augment-yf-news",
-        dest="augment_yf_news",
-        action="store_false",
-        help="Disable yfinance news augmentation and use only local sentiment data.",
+        dest="disable_live_news",
+        action="store_true",
+        help=argparse.SUPPRESS,
+    )
+    parser.add_argument(
+        "--live-news-required",
+        action="store_true",
+        help="Fail closed when live news coverage is too low for the filtered universe.",
     )
     parser.add_argument("--save-json", type=str, nargs="?", const="default", default="default")
     parser.add_argument("--save-csv", type=str, nargs="?", const="default", default="default")
@@ -456,8 +391,11 @@ def _build_pick(
     feature_date: pd.Timestamp,
     picks_for_date: pd.Timestamp,
     mode: str,
+    entry_basis: str,
     reference_price: float,
     previous_close: float,
+    cutoff_close: float | None,
+    cutoff_timestamp: str | None,
     session_open: float | None,
     live_price: float | None,
     gap_pct: float | None,
@@ -468,6 +406,7 @@ def _build_pick(
     predicted_magnitude: float,
     target_pct: float,
     stop_loss_pct: float,
+    preferred_filter_pass: bool,
 ) -> Recommendation:
     target_price, stop_loss_price = compute_trade_levels(
         reference_price=reference_price,
@@ -481,8 +420,12 @@ def _build_pick(
         data_through_date=feature_date.strftime("%Y-%m-%d"),
         picks_for_date=picks_for_date.strftime("%Y-%m-%d"),
         mode=mode,
+        entry_basis=entry_basis,
+        entry_price=round(reference_price, 2),
         reference_price=round(reference_price, 2),
         previous_close=round(previous_close, 2),
+        cutoff_close=round(cutoff_close, 2) if cutoff_close is not None else None,
+        cutoff_timestamp=cutoff_timestamp,
         session_open=round(session_open, 2) if session_open is not None else None,
         live_price=round(live_price, 2) if live_price is not None else None,
         gap_pct=round(gap_pct, 6) if gap_pct is not None else None,
@@ -496,6 +439,7 @@ def _build_pick(
         stop_loss_price=round(stop_loss_price, 2),
         target_pct=round(target_pct, 4),
         stop_loss_pct=round(stop_loss_pct, 4),
+        preferred_filter_pass=preferred_filter_pass,
     )
 
 
@@ -509,40 +453,30 @@ def _render_pick_table(title: str, picks: list[Recommendation], color: str, mode
     table = Table(title=title, header_style=f"bold {color}")
     table.add_column("#", style="dim", width=3)
     table.add_column("Symbol", style="bold")
-    table.add_column("Data Through", style="dim")
-    table.add_column("Ref Price", justify="right")
+    table.add_column("Prev Close", justify="right")
+    if mode == "post-open":
+        table.add_column("Cutoff Close", justify="right")
+    table.add_column("Entry", justify="right")
     table.add_column("Target", justify="right", style="green")
     table.add_column("Stop", justify="right", style="red")
-    if mode == "post-open":
-        table.add_column("Gap", justify="right")
-        table.add_column("Move", justify="right")
-        table.add_column("Range", justify="right")
+    table.add_column("Pref", justify="center")
     table.add_column("Conf", justify="right")
-    table.add_column("Prob", justify="right")
-    table.add_column("Pred %", justify="right", style="cyan")
     table.add_column("Score", justify="right", style="cyan")
     for idx, pick in enumerate(picks, start=1):
         row = [
             str(idx),
             pick.symbol,
-            pick.data_through_date,
-            f"₹{pick.reference_price:,.2f}",
-            f"₹{pick.target_price:,.2f}",
-            f"₹{pick.stop_loss_price:,.2f}",
+            f"₹{pick.previous_close:,.2f}",
         ]
         if mode == "post-open":
-            row.extend(
-                [
-                    _fmt_pct(pick.gap_pct),
-                    _fmt_pct(pick.move_from_open_pct),
-                    _fmt_pct(pick.opening_range_pct),
-                ]
-            )
+            row.append(f"₹{(pick.cutoff_close if pick.cutoff_close is not None else pick.reference_price):,.2f}")
         row.extend(
             [
+                f"₹{pick.entry_price:,.2f}",
+                f"₹{pick.target_price:,.2f}",
+                f"₹{pick.stop_loss_price:,.2f}",
+                "yes" if pick.preferred_filter_pass else "no",
                 f"{pick.confidence:.2f}",
-                f"{pick.side_probability:.2f}",
-                f"{pick.predicted_magnitude * 100:.2f}%",
                 f"{pick.score:.4f}",
             ]
         )
@@ -553,6 +487,8 @@ def _render_pick_table(title: str, picks: list[Recommendation], color: str, mode
 def main() -> int:
     global console
     args = parse_args()
+    started_at = perf_counter()
+    runtime_tracker = RuntimeTracker()
     if args.per_side > 0:
         args.long_count = args.per_side
         args.short_count = args.per_side
@@ -594,31 +530,68 @@ def main() -> int:
         feature_cols = model_data["features"]
 
         symbols = get_universe(args.universe)
+        resolved_industries = resolve_industry_filters(args.industry) if args.industry else []
+        symbols = filter_symbols_by_industry(symbols, resolved_industries)
         if args.max_stocks > 0:
             symbols = symbols[:args.max_stocks]
+        if not symbols:
+            console.print("[red]No symbols matched the selected universe / industry filters.[/red]")
+            return 1
 
         market_builder = MarketFeatureBuilder()
+        runtime_tracker.start("data_refresh_seconds")
         market_builder.download(start="2021-01-01", end=market_data_end)
 
         sentiment_csv = Path("data/sentiment/combined_sentiment_2015_2025.csv")
-        if args.augment_yf_news:
-            console.print("[bold]Augmenting sentiment with yfinance news where available...[/bold]")
-            augmented_csv = PROJECT_ROOT / "data" / "sentiment" / f"combined_sentiment_augmented_for_{picks_for_date.strftime('%Y-%m-%d')}.csv"
-            sentiment_csv = augment_sentiment_with_yfinance(
+        historical_articles = normalize_historical_sentiment_csv(
+            sentiment_csv,
+            universe_metadata_csv=str(PROJECT_ROOT / "data" / "sentiment" / "ind_nifty500list.csv"),
+            market_open_cutoff="09:15",
+            post_open_cutoff=args.post_open_news_cutoff,
+        )
+        live_articles = pd.DataFrame()
+        news_summary = LiveNewsSummary()
+        if not args.disable_live_news:
+            console.print("[bold]Fetching live yfinance news and merging it with historical fallback...[/bold]")
+            live_end_ts = picks_for_date + pd.Timedelta(hours=9, minutes=15)
+            if args.mode == "post-open":
+                today_now = pd.Timestamp.now(tz="Asia/Kolkata").tz_localize(None)
+                cutoff_today = pd.Timestamp(f"{picks_for_date.strftime('%Y-%m-%d')} {args.post_open_news_cutoff}")
+                live_end_ts = min(today_now, cutoff_today)
+            live_articles, news_summary = fetch_live_yfinance_news(
                 symbols,
-                sentiment_csv,
-                backfill_start,
-                market_data_end,
-                augmented_csv,
+                start_ts=pd.Timestamp(backfill_start),
+                end_ts=live_end_ts,
+                universe_metadata_csv=str(PROJECT_ROOT / "data" / "sentiment" / "ind_nifty500list.csv"),
+                market_open_cutoff="09:15",
+                post_open_cutoff=args.post_open_news_cutoff,
             )
-        sentiment_builder = SentimentFeatureBuilder(str(sentiment_csv), market_builder=market_builder)
+        combined_articles = combine_article_sources(historical_articles, live_articles)
+        news_summary = summarize_article_coverage(
+            combined_articles,
+            symbols=symbols,
+            mode=args.mode,
+            target_dates=[picks_for_date],
+            base_summary=news_summary,
+        )
+        sentiment_builder = SentimentFeatureBuilder(
+            str(sentiment_csv),
+            market_builder=market_builder,
+            mode=args.mode,
+            post_open_news_cutoff=args.post_open_news_cutoff,
+            universe_metadata_csv=str(PROJECT_ROOT / "data" / "sentiment" / "ind_nifty500list.csv"),
+            articles_df=combined_articles,
+        )
         sentiment_builder._load()
+        runtime_tracker.stop("data_refresh_seconds")
+        sector_index_coverage = 0
 
         data_dir = Path(args.data_dir)
         long_candidates: dict[str, Recommendation] = {}
         short_candidates: dict[str, Recommendation] = {}
         processed_symbols = 0
         skipped_symbols: list[str] = []
+        stale_symbols: list[str] = []
         latest_data_counts: dict[pd.Timestamp, int] = {}
         post_open_symbols_with_live_data = 0
         post_open_partial_symbols = 0
@@ -635,6 +608,7 @@ def main() -> int:
             task = progress.add_task("Scoring symbols", total=len(symbols))
             for symbol in symbols:
                 progress.update(task, description=f"Scoring {symbol}")
+                runtime_tracker.start("data_refresh_seconds")
                 minute_df = load_minute_data(data_dir / f"{symbol}_minute.csv")
                 minute_df = maybe_backfill_with_yfinance(
                     minute_df,
@@ -650,12 +624,15 @@ def main() -> int:
                         picks_for_date,
                         args.refresh_yfinance,
                     )
+                runtime_tracker.stop("data_refresh_seconds")
                 if minute_df is None:
                     skipped_symbols.append(symbol)
                     progress.advance(task)
                     continue
 
+                runtime_tracker.start("feature_build_seconds")
                 feature_df = build_open_safe_daily_features(minute_df, symbol, market_builder, sentiment_builder)
+                runtime_tracker.stop("feature_build_seconds")
                 if feature_df is None or feature_df.empty:
                     skipped_symbols.append(symbol)
                     progress.advance(task)
@@ -669,6 +646,13 @@ def main() -> int:
 
                 last_row = feature_df.iloc[[-1]]
                 feature_date = last_row.index[-1]
+                if float(last_row.iloc[0].get("sector_index_prev_return", 0.0)) != 0.0:
+                    sector_index_coverage += 1
+                feature_age_bdays = feature_staleness_bdays(feature_date, picks_for_date)
+                if feature_age_bdays > args.max_feature_staleness_bdays:
+                    stale_symbols.append(symbol)
+                    progress.advance(task)
+                    continue
                 latest_data_counts[feature_date.normalize()] = latest_data_counts.get(feature_date.normalize(), 0) + 1
                 minute_hist = minute_df[minute_df.index.normalize() == feature_date.normalize()]
                 if minute_hist.empty:
@@ -703,6 +687,10 @@ def main() -> int:
                 short_move_pct = None
                 long_range_pct = None
                 short_range_pct = None
+                long_cutoff_close = None
+                short_cutoff_close = None
+                long_cutoff_timestamp = None
+                short_cutoff_timestamp = None
                 long_session_open = None
                 short_session_open = None
                 long_live_price = None
@@ -751,13 +739,17 @@ def main() -> int:
                         short_move_pct = short_adjustment["move_from_open_pct"]
                         long_range_pct = long_adjustment["opening_range_pct"]
                         short_range_pct = short_adjustment["opening_range_pct"]
+                        long_cutoff_close = long_adjustment["cutoff_close"]
+                        short_cutoff_close = short_adjustment["cutoff_close"]
+                        long_cutoff_timestamp = long_adjustment["cutoff_timestamp"]
+                        short_cutoff_timestamp = short_adjustment["cutoff_timestamp"]
                         long_session_open = long_adjustment["session_open"]
                         short_session_open = short_adjustment["session_open"]
                         long_live_price = long_adjustment["live_price"]
                         short_live_price = short_adjustment["live_price"]
                     else:
-                        long_confidence = 0.0
-                        short_confidence = 0.0
+                        progress.advance(task)
+                        continue
 
                 long_alignment_ok = True
                 short_alignment_ok = True
@@ -767,49 +759,74 @@ def main() -> int:
                     long_alignment_ok = long_gap_pct is not None and long_alignment_score >= args.post_open_min_alignment
                     short_alignment_ok = short_gap_pct is not None and short_alignment_score >= args.post_open_min_alignment
 
-                if long_confidence >= min_confidence and long_mag >= min_predicted_magnitude and long_alignment_ok and long_regime_ok:
-                    long_pick = _build_pick(
-                        symbol=symbol,
-                        direction="LONG",
-                        feature_date=feature_date,
-                        picks_for_date=picks_for_date,
-                        mode=args.mode,
-                        reference_price=long_reference_price,
-                        previous_close=last_close,
-                        session_open=long_session_open,
-                        live_price=long_live_price,
-                        gap_pct=long_gap_pct,
-                        move_from_open_pct=long_move_pct,
-                        opening_range_pct=long_range_pct,
-                        confidence=long_confidence,
-                        side_probability=long_prob,
-                        predicted_magnitude=long_mag,
-                        target_pct=target_pct,
-                        stop_loss_pct=stop_loss_pct,
-                    )
-                    long_candidates[symbol] = long_pick
+                long_passes_preferred_filters = compute_preferred_filter_pass(
+                    confidence=long_confidence,
+                    predicted_magnitude=long_mag,
+                    min_confidence=min_confidence,
+                    min_predicted_magnitude=min_predicted_magnitude,
+                    alignment_ok=long_alignment_ok,
+                    regime_ok=long_regime_ok,
+                )
+                short_passes_preferred_filters = compute_preferred_filter_pass(
+                    confidence=short_confidence,
+                    predicted_magnitude=short_mag,
+                    min_confidence=min_confidence,
+                    min_predicted_magnitude=min_predicted_magnitude,
+                    alignment_ok=short_alignment_ok,
+                    regime_ok=short_regime_ok,
+                )
 
-                if short_confidence >= min_confidence and short_mag >= min_predicted_magnitude and short_alignment_ok and short_regime_ok:
-                    short_pick = _build_pick(
-                        symbol=symbol,
-                        direction="SHORT",
-                        feature_date=feature_date,
-                        picks_for_date=picks_for_date,
-                        mode=args.mode,
-                        reference_price=short_reference_price,
-                        previous_close=last_close,
-                        session_open=short_session_open,
-                        live_price=short_live_price,
-                        gap_pct=short_gap_pct,
-                        move_from_open_pct=short_move_pct,
-                        opening_range_pct=short_range_pct,
-                        confidence=short_confidence,
-                        side_probability=short_prob,
-                        predicted_magnitude=short_mag,
-                        target_pct=target_pct,
-                        stop_loss_pct=stop_loss_pct,
-                    )
-                    short_candidates[symbol] = short_pick
+                runtime_tracker.start("ranking_seconds")
+                long_pick = _build_pick(
+                    symbol=symbol,
+                    direction="LONG",
+                    feature_date=feature_date,
+                    picks_for_date=picks_for_date,
+                    mode=args.mode,
+                    entry_basis="Cutoff Close" if args.mode == "post-open" else "Previous Close",
+                    reference_price=long_reference_price,
+                    previous_close=last_close,
+                    cutoff_close=long_cutoff_close,
+                    cutoff_timestamp=long_cutoff_timestamp,
+                    session_open=long_session_open,
+                    live_price=long_live_price,
+                    gap_pct=long_gap_pct,
+                    move_from_open_pct=long_move_pct,
+                    opening_range_pct=long_range_pct,
+                    confidence=long_confidence,
+                    side_probability=long_prob,
+                    predicted_magnitude=long_mag,
+                    target_pct=target_pct,
+                    stop_loss_pct=stop_loss_pct,
+                    preferred_filter_pass=long_passes_preferred_filters,
+                )
+                long_candidates[symbol] = long_pick
+
+                short_pick = _build_pick(
+                    symbol=symbol,
+                    direction="SHORT",
+                    feature_date=feature_date,
+                    picks_for_date=picks_for_date,
+                    mode=args.mode,
+                    entry_basis="Cutoff Close" if args.mode == "post-open" else "Previous Close",
+                    reference_price=short_reference_price,
+                    previous_close=last_close,
+                    cutoff_close=short_cutoff_close,
+                    cutoff_timestamp=short_cutoff_timestamp,
+                    session_open=short_session_open,
+                    live_price=short_live_price,
+                    gap_pct=short_gap_pct,
+                    move_from_open_pct=short_move_pct,
+                    opening_range_pct=short_range_pct,
+                    confidence=short_confidence,
+                    side_probability=short_prob,
+                    predicted_magnitude=short_mag,
+                    target_pct=target_pct,
+                    stop_loss_pct=stop_loss_pct,
+                    preferred_filter_pass=short_passes_preferred_filters,
+                )
+                short_candidates[symbol] = short_pick
+                runtime_tracker.stop("ranking_seconds")
                 progress.advance(task)
 
         # Prevent contradictory picks by keeping each symbol on its stronger side.
@@ -820,8 +837,16 @@ def main() -> int:
             else:
                 long_candidates.pop(symbol, None)
 
-        top_longs = sorted(long_candidates.values(), key=lambda item: item.score, reverse=True)[: args.long_count]
-        top_shorts = sorted(short_candidates.values(), key=lambda item: item.score, reverse=True)[: args.short_count]
+        top_longs = select_candidates(
+            list(long_candidates.values()),
+            count=args.long_count,
+            allow_below_preferred=args.allow_below_preferred,
+        )
+        top_shorts = select_candidates(
+            list(short_candidates.values()),
+            count=args.short_count,
+            allow_below_preferred=args.allow_below_preferred,
+        )
         all_picks = top_longs + top_shorts
         latest_data_date = max(latest_data_counts) if latest_data_counts else None
         symbols_on_latest_date = latest_data_counts.get(latest_data_date, 0) if latest_data_date is not None else 0
@@ -832,11 +857,29 @@ def main() -> int:
         summary_table.add_column("Metric", style="cyan")
         summary_table.add_column("Value", justify="right", style="green")
         summary_table.add_row("Processed symbols", str(processed_symbols))
+        summary_table.add_row("Industry filter", ", ".join(resolved_industries) if resolved_industries else "All")
         summary_table.add_row("Skipped symbols", str(len(skipped_symbols)))
-        summary_table.add_row("Qualified longs", str(len(long_candidates)))
-        summary_table.add_row("Qualified shorts", str(len(short_candidates)))
+        summary_table.add_row("Stale symbols filtered", str(len(stale_symbols)))
+        summary_table.add_row("Live article count kept", str(news_summary.live_article_count_kept))
+        summary_table.add_row("Historical article rows used", str(news_summary.historical_article_count_used))
+        summary_table.add_row("Stock news coverage", str(news_summary.stock_news_coverage))
+        summary_table.add_row("Industry news coverage", str(news_summary.industry_news_coverage))
+        summary_table.add_row("Live source failures", str(news_summary.live_source_failure_count))
+        summary_table.add_row("Fallback-used symbols", str(news_summary.fallback_used_count))
+        summary_table.add_row("Sector index coverage", str(sector_index_coverage))
+        summary_table.add_row(
+            "Above preferred longs",
+            str(sum(1 for pick in long_candidates.values() if pick.preferred_filter_pass)),
+        )
+        summary_table.add_row(
+            "Above preferred shorts",
+            str(sum(1 for pick in short_candidates.values() if pick.preferred_filter_pass)),
+        )
+        summary_table.add_row("Ranked longs", str(len(long_candidates)))
+        summary_table.add_row("Ranked shorts", str(len(short_candidates)))
         summary_table.add_row("Returned longs", str(len(top_longs)))
         summary_table.add_row("Returned shorts", str(len(top_shorts)))
+        summary_table.add_row("Allow below preferred", "yes" if args.allow_below_preferred else "no")
         summary_table.add_row("Strategy target", f"{target_pct*100:.2f}%")
         summary_table.add_row("Strategy stop", f"{stop_loss_pct*100:.2f}%")
         summary_table.add_row(
@@ -853,11 +896,15 @@ def main() -> int:
             summary_table.add_row("Post-open cutoff", args.post_open_cutoff)
             summary_table.add_row("Live symbols", str(post_open_symbols_with_live_data))
             summary_table.add_row("Partial live symbols", str(post_open_partial_symbols))
+            cutoff_times = sorted({pick.cutoff_timestamp for pick in all_picks if pick.cutoff_timestamp})
+            summary_table.add_row("Latest cutoff seen", cutoff_times[-1] if cutoff_times else "N/A")
         summary_table.add_row("Freshness OK", "yes" if freshness_ok else "no")
+        runtime_metrics = runtime_tracker.snapshot(perf_counter() - started_at)
+        summary_table.add_row("Runtime", f"{runtime_metrics['total_runtime_seconds']:.2f}s")
         console.print()
         console.print(summary_table)
         console.print()
-        readiness_paths = default_readiness_paths(PROJECT_ROOT)
+        readiness_paths = default_readiness_paths(PROJECT_ROOT, mode=args.mode)
         readiness = evaluate_readiness(
             locked_backtest_summary=load_json_if_exists(readiness_paths["locked_backtest"]),
             forward_summary=load_json_if_exists(readiness_paths["forward_blind"]),
@@ -868,7 +915,7 @@ def main() -> int:
             processed_symbols=processed_symbols,
         )
         readiness_reason_text = "\n".join(f"- {reason}" for reason in readiness.reasons[:4]) or "- All readiness checks passed."
-        readiness_style = "green" if readiness.status == "READY" else ("yellow" if readiness.status == "PAPER_ONLY" else "red")
+        readiness_style = "green" if readiness.status == "READY" else ("yellow" if readiness.status in {"PAPER_ONLY", "SMALL_LIVE"} else "red")
         console.print(
             Panel.fit(
                 f"[bold {readiness_style}]Readiness: {readiness.status}[/bold {readiness_style}]\n{readiness_reason_text}",
@@ -876,9 +923,24 @@ def main() -> int:
             )
         )
         console.print()
+        if args.allow_below_preferred and any(not pick.preferred_filter_pass for pick in all_picks):
+            console.print(
+                Panel.fit(
+                    "[bold yellow]Ranking mode[/bold yellow]\n"
+                    "The CLI backfilled your requested slots with below-threshold names after exhausting the preferred set.\n"
+                    "Use the [bold]Pref[/bold] column plus [bold]Conf[/bold] to decide whether you want to act on them.",
+                    border_style="yellow",
+                )
+            )
+            console.print()
         if not freshness_ok:
             console.print("[bold red]Fresh data coverage is not sufficient for honest recommendations.[/bold red]")
             return 1
+        if args.live_news_required:
+            minimum_symbols = max(1, int(len(symbols) * 0.10))
+            if news_summary.symbols_with_live_news < minimum_symbols:
+                console.print("[bold red]Live news coverage was below the required threshold, so the run is failing closed.[/bold red]")
+                return 1
         if args.mode == "post-open" and post_open_symbols_with_live_data == 0:
             console.print("[bold red]No live post-open bars were available, so V7 is failing closed instead of inventing picks.[/bold red]")
             return 1
@@ -914,16 +976,16 @@ def main() -> int:
             _render_pick_table(f"Top {len(top_longs)} Long Picks", top_longs, "green", args.mode)
             console.print()
         else:
-            console.print("[yellow]No long picks passed the current filters.[/yellow]\n")
+            console.print("[yellow]No long picks could be ranked for the requested day.[/yellow]\n")
 
         if top_shorts:
             _render_pick_table(f"Top {len(top_shorts)} Short Picks", top_shorts, "red", args.mode)
             console.print()
         else:
-            console.print("[yellow]No short picks passed the current filters.[/yellow]\n")
+            console.print("[yellow]No short picks could be ranked for the requested day.[/yellow]\n")
 
         if not all_picks:
-            console.print("[bold red]No recommendations generated with the current thresholds.[/bold red]")
+            console.print("[bold red]No recommendations could be generated for the requested day.[/bold red]")
             return 1
 
         payload = {
@@ -933,28 +995,41 @@ def main() -> int:
             "target_version": model_data.get("target_version"),
             "feature_version": model_data.get("feature_version"),
             "universe": args.universe,
+            "industry_filter": resolved_industries,
             "data_dir": str(data_dir),
             "risk_profile": args.risk_profile,
+            "allow_below_preferred": args.allow_below_preferred,
+            "max_feature_staleness_bdays": args.max_feature_staleness_bdays,
             "min_confidence": min_confidence,
             "min_predicted_magnitude": min_predicted_magnitude,
             "target_pct": target_pct,
             "stop_loss_pct": stop_loss_pct,
             "processed_symbols": processed_symbols,
             "skipped_symbols": skipped_symbols,
+            "stale_symbols_filtered": stale_symbols,
             "latest_completed_data_date": latest_data_date.strftime("%Y-%m-%d") if latest_data_date is not None else None,
             "symbols_on_latest_date": symbols_on_latest_date,
             "freshness_ok": freshness_ok,
             "recommendation_mode": args.mode,
             "same_day_gap_aware": args.mode == "post-open",
+            "mode": args.mode,
+            "entry_basis": "Cutoff Close" if args.mode == "post-open" else "Previous Close",
             "post_open_cutoff": args.post_open_cutoff if args.mode == "post-open" else None,
             "post_open_min_alignment": args.post_open_min_alignment if args.mode == "post-open" else None,
             "post_open_symbols_with_live_data": post_open_symbols_with_live_data if args.mode == "post-open" else None,
             "post_open_partial_symbols": post_open_partial_symbols if args.mode == "post-open" else None,
+            "runtime_metrics": runtime_metrics,
+            "news_summary": news_summary.to_dict() | {"sector_index_coverage": sector_index_coverage},
             "counts": {
                 "requested_longs": args.long_count,
                 "requested_shorts": args.short_count,
+                "above_preferred_longs": sum(1 for pick in long_candidates.values() if pick.preferred_filter_pass),
+                "above_preferred_shorts": sum(1 for pick in short_candidates.values() if pick.preferred_filter_pass),
+                "ranked_longs": len(long_candidates),
+                "ranked_shorts": len(short_candidates),
                 "returned_longs": len(top_longs),
                 "returned_shorts": len(top_shorts),
+                "forced_vs_preferred_returned": int(sum(1 for pick in all_picks if not pick.preferred_filter_pass)),
             },
             "readiness": readiness.to_dict(),
             "long_picks": [asdict(pick) for pick in top_longs],

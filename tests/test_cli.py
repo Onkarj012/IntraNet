@@ -116,6 +116,69 @@ def test_cli_readiness_dispatches_report(monkeypatch):
     ]
 
 
+def test_cli_optinet_evaluate_dispatches_script(monkeypatch):
+    test_console = make_recording_console()
+    monkeypatch.setattr(cli, "console", test_console)
+
+    captured: dict[str, object] = {}
+
+    def fake_run(command, cwd, check):
+        captured["command"] = command
+        captured["cwd"] = cwd
+        captured["check"] = check
+        return SimpleNamespace(returncode=0)
+
+    monkeypatch.setattr(cli.subprocess, "run", fake_run)
+
+    exit_code = cli.main(["optinet-evaluate", "--profile", "balanced"])
+
+    assert exit_code == 0
+    assert captured["command"] == [
+        cli.sys.executable,
+        str(cli.SCRIPTS_DIR / "evaluate_optinet.py"),
+        "--profile",
+        "balanced",
+    ]
+
+
+def test_cli_paper_commands_dispatch_scripts(monkeypatch):
+    test_console = make_recording_console()
+    monkeypatch.setattr(cli, "console", test_console)
+
+    captured: list[list[str]] = []
+
+    def fake_run(command, cwd, check):
+        captured.append(command)
+        return SimpleNamespace(returncode=0)
+
+    monkeypatch.setattr(cli.subprocess, "run", fake_run)
+
+    assert cli.main(["paper-ledger", "--system", "optinet"]) == 0
+    assert cli.main(["reconcile-paper", "--ledger", "ledger.csv"]) == 0
+    assert captured[0][1] == str(cli.SCRIPTS_DIR / "paper_ledger.py")
+    assert captured[1][1] == str(cli.SCRIPTS_DIR / "reconcile_paper.py")
+
+
+def test_cli_equity_paper_and_system_status_dispatch_scripts(monkeypatch):
+    test_console = make_recording_console()
+    monkeypatch.setattr(cli, "console", test_console)
+
+    captured: list[list[str]] = []
+
+    def fake_run(command, cwd, check):
+        captured.append(command)
+        return SimpleNamespace(returncode=0)
+
+    monkeypatch.setattr(cli.subprocess, "run", fake_run)
+
+    assert cli.main(["equity-paper-ledger", "--recommendations", "picks.json"]) == 0
+    assert cli.main(["reconcile-equity-paper", "--ledger", "ledger.csv"]) == 0
+    assert cli.main(["system-status"]) == 0
+    assert captured[0][1] == str(cli.SCRIPTS_DIR / "equity_paper_ledger.py")
+    assert captured[1][1] == str(cli.SCRIPTS_DIR / "reconcile_equity_paper.py")
+    assert captured[2][1] == str(cli.SCRIPTS_DIR / "trading_system_status.py")
+
+
 def test_cli_unknown_command_returns_error(monkeypatch):
     test_console = make_recording_console()
     monkeypatch.setattr(cli, "console", test_console)

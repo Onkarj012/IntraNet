@@ -1,9 +1,0 @@
-{
-  "total_errors": 103241,
-  "error_rate": 0.46350037262842214,
-  "false_positives": 9542,
-  "false_negatives": 93699,
-  "fp_confidence_mean": 0.5456352338786234,
-  "fn_confidence_mean": 0.4609063031450102,
-  "high_confidence_errors": 20
-}

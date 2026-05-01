@@ -48,8 +48,8 @@ DEFAULT_STRATEGY_PROFILES: dict[str, StrategyConfig] = {
         target_pct=0.010,
         trailing_start=0.005,
         trailing_stop_pct=0.003,
-        min_confidence=0.67,
-        min_predicted_magnitude=0.008,
+        min_confidence=0.50,
+        min_predicted_magnitude=0.013,
     ),
     "balanced": StrategyConfig(
         name="Balanced",
@@ -57,8 +57,8 @@ DEFAULT_STRATEGY_PROFILES: dict[str, StrategyConfig] = {
         target_pct=0.015,
         trailing_start=0.008,
         trailing_stop_pct=0.005,
-        min_confidence=0.65,
-        min_predicted_magnitude=0.010,
+        min_confidence=0.50,
+        min_predicted_magnitude=0.012,
     ),
     "aggressive": StrategyConfig(
         name="Aggressive",
@@ -66,8 +66,8 @@ DEFAULT_STRATEGY_PROFILES: dict[str, StrategyConfig] = {
         target_pct=0.025,
         trailing_start=0.015,
         trailing_stop_pct=0.010,
-        min_confidence=0.58,
-        min_predicted_magnitude=0.012,
+        min_confidence=0.48,
+        min_predicted_magnitude=0.010,
     ),
 }
 
@@ -129,6 +129,49 @@ def score_candidate(confidence: float, executable_edge: float) -> float:
     return float(confidence * max(executable_edge, 1e-6))
 
 
+def expected_feature_date(picks_for_date: pd.Timestamp) -> pd.Timestamp:
+    return (pd.Timestamp(picks_for_date).normalize() - pd.offsets.BDay(1)).normalize()
+
+
+def feature_staleness_bdays(
+    feature_date: pd.Timestamp,
+    picks_for_date: pd.Timestamp,
+) -> int:
+    feature_dt = pd.Timestamp(feature_date).normalize()
+    expected_dt = expected_feature_date(pd.Timestamp(picks_for_date))
+    if feature_dt >= expected_dt:
+        return 0
+    return max(len(pd.bdate_range(feature_dt, expected_dt)) - 1, 0)
+
+
+def _candidate_attr(candidate: Any, field: str) -> Any:
+    if isinstance(candidate, dict):
+        return candidate[field]
+    return getattr(candidate, field)
+
+
+def select_candidates(
+    candidates: list[Any],
+    *,
+    count: int,
+    allow_below_preferred: bool,
+) -> list[Any]:
+    ranked_preferred = sorted(
+        [candidate for candidate in candidates if _candidate_attr(candidate, "preferred_filter_pass")],
+        key=lambda candidate: _candidate_attr(candidate, "score"),
+        reverse=True,
+    )
+    if not allow_below_preferred or len(ranked_preferred) >= count:
+        return ranked_preferred[:count]
+
+    ranked_fallback = sorted(
+        [candidate for candidate in candidates if not _candidate_attr(candidate, "preferred_filter_pass")],
+        key=lambda candidate: _candidate_attr(candidate, "score"),
+        reverse=True,
+    )
+    return (ranked_preferred + ranked_fallback)[:count]
+
+
 def compute_trade_levels(
     *,
     reference_price: float,
@@ -156,18 +199,31 @@ def load_json_if_exists(path: Path | None) -> dict[str, Any] | None:
         return None
 
 
-def default_readiness_paths(project_root: Path) -> dict[str, Path]:
+def default_readiness_paths(project_root: Path, mode: str = "premarket") -> dict[str, Path]:
+    mode_dir = "premarket_backtest" if mode == "premarket" else "post_open_backtest"
     return {
         "locked_backtest": project_root
         / "results"
         / "backtests"
-        / "backtest_results_nifty500_universe"
-        / "summary_intraday_model_balanced_2025-01-01_2025-12-31.json",
+        / mode_dir
+        / "summary_intraday_model_balanced_premarket_2025-01-01_2025-12-31.json"
+        if mode == "premarket"
+        else project_root
+        / "results"
+        / "backtests"
+        / mode_dir
+        / "summary_intraday_model_balanced_post-open_2025-01-01_2025-12-31.json",
         "forward_blind": project_root
         / "results"
         / "backtests"
-        / "backtest_results_q1_2026_refreshed"
-        / "summary_intraday_model_balanced_2026-01-01_2026-03-31.json",
+        / mode_dir
+        / "summary_intraday_model_balanced_premarket_2026-01-01_2026-03-31.json"
+        if mode == "premarket"
+        else project_root
+        / "results"
+        / "backtests"
+        / mode_dir
+        / "summary_intraday_model_balanced_post-open_2026-01-01_2026-03-31.json",
     }
 
 
@@ -185,11 +241,14 @@ def evaluate_readiness(
     checks = {
         "target_alignment": bool(target_alignment),
         "freshness_ok": bool(freshness_ok),
+        "mode_backtested": False,
         "locked_positive": False,
         "forward_positive": False,
         "hit_rate_ok": False,
         "target_before_stop_ok": False,
         "live_data_ok": mode != "post-open",
+        "runtime_ok": mode != "post-open",
+        "logic_match_ok": False,
     }
     metrics: dict[str, float | int | str | None] = {
         "locked_net_pnl": None,
@@ -203,6 +262,11 @@ def evaluate_readiness(
         "live_symbols": int(live_symbols),
         "processed_symbols": int(processed_symbols),
         "mode": mode,
+        "locked_mode": None,
+        "forward_mode": None,
+        "locked_runtime_seconds": None,
+        "forward_runtime_seconds": None,
+        "decision": None,
     }
 
     if not target_alignment:
@@ -212,6 +276,11 @@ def evaluate_readiness(
         reasons.append("Latest usable market data is stale for the requested trading date.")
 
     if locked_backtest_summary:
+        locked_mode = locked_backtest_summary.get("mode")
+        metrics["locked_mode"] = locked_mode
+        checks["mode_backtested"] = locked_mode == mode
+        checks["logic_match_ok"] = bool(locked_backtest_summary.get("exact_logic_match", False))
+        metrics["locked_runtime_seconds"] = locked_backtest_summary.get("runtime_metrics", {}).get("total_runtime_seconds")
         locked_net = float(locked_backtest_summary.get("total_net_pnl", 0.0))
         locked_hit_rate = float(locked_backtest_summary.get("target_touched_intraday_hit_rate", 0.0))
         locked_tbs = float(locked_backtest_summary.get("target_before_stop_rate", 0.0))
@@ -233,10 +302,16 @@ def evaluate_readiness(
             reasons.append("Locked backtest hit rate is below the 30% floor.")
         if locked_tbs < 0.18:
             reasons.append("Locked backtest target-before-stop rate is below the 18% floor.")
+        if locked_mode != mode:
+            reasons.append("Locked backtest was not run in the same mode being certified.")
+        if not checks["logic_match_ok"]:
+            reasons.append("Locked backtest is not marked as exact-logic parity with live recommendations.")
     else:
         reasons.append("Locked backtest summary is missing.")
 
     if forward_summary:
+        metrics["forward_mode"] = forward_summary.get("mode")
+        metrics["forward_runtime_seconds"] = forward_summary.get("runtime_metrics", {}).get("total_runtime_seconds")
         forward_net = float(forward_summary.get("total_net_pnl", 0.0))
         forward_hit_rate = float(forward_summary.get("target_touched_intraday_hit_rate", 0.0))
         forward_tbs = float(forward_summary.get("target_before_stop_rate", 0.0))
@@ -252,21 +327,45 @@ def evaluate_readiness(
         checks["forward_positive"] = forward_net > 0
         if forward_net <= 0:
             reasons.append("Forward blind test is not positive after costs.")
+        if forward_summary.get("mode") != mode:
+            reasons.append("Forward blind test was not run in the same mode being certified.")
     else:
         reasons.append("Forward blind test summary is missing.")
 
     if mode == "post-open":
         live_ok = live_symbols > 0 and live_symbols >= max(5, int(processed_symbols * 0.20))
         checks["live_data_ok"] = live_ok
+        runtime_candidates = [
+            value
+            for value in (metrics.get("locked_runtime_seconds"), metrics.get("forward_runtime_seconds"))
+            if value is not None
+        ]
+        checks["runtime_ok"] = bool(runtime_candidates) and float(np.median(runtime_candidates)) < 120.0
         if not live_ok:
             reasons.append("Post-open mode does not have enough live symbols to trust the run.")
+        if not checks["runtime_ok"]:
+            reasons.append("Post-open runtime is still above the 2 minute personal-live threshold.")
+    else:
+        checks["runtime_ok"] = True
 
     if all(checks.values()):
         status = "READY"
+        metrics["decision"] = "ready"
+    elif (
+        checks["target_alignment"]
+        and checks["freshness_ok"]
+        and checks["mode_backtested"]
+        and checks["locked_positive"]
+        and checks["logic_match_ok"]
+    ):
+        status = "SMALL_LIVE"
+        metrics["decision"] = "small-live"
     elif checks["target_alignment"] and checks["freshness_ok"] and checks["locked_positive"]:
         status = "PAPER_ONLY"
+        metrics["decision"] = "paper-only"
     else:
         status = "NOT_READY"
+        metrics["decision"] = "not-ready"
 
     return ReadinessAssessment(
         status=status,

@@ -90,6 +90,78 @@ COMMANDS = (
         example="uv run intradaynet backtest --risk balanced --capital 100000 --top-k 5",
         aliases=("evaluate",),
     ),
+    CommandSpec(
+        name="optinet-dataset",
+        script="optinet_build_dataset.py",
+        summary="Build the OptiNet v1 index-options training dataset.",
+        example="uv run intradaynet optinet-dataset --index data/index.csv --options data/options.csv",
+    ),
+    CommandSpec(
+        name="optinet-prepare-indices",
+        script="prepare_optinet_indices.py",
+        summary="Aggregate minute NIFTY/BANKNIFTY spot and option files into OptiNet EOD inputs.",
+        example="uv run intradaynet optinet-prepare-indices --data-root data/indices",
+    ),
+    CommandSpec(
+        name="optinet-train",
+        script="train_optinet.py",
+        summary="Train the OptiNet v1 LightGBM model stack.",
+        example="uv run intradaynet optinet-train --dataset cache/optinet/training_dataset.parquet --profile balanced",
+    ),
+    CommandSpec(
+        name="optinet-picks",
+        script="recommend_optinet.py",
+        summary="Generate OptiNet index option recommendations.",
+        example="uv run intradaynet optinet-picks --model results/models/optinet/optinet_balanced.pkl --index data/index.csv --options data/options.csv",
+    ),
+    CommandSpec(
+        name="optinet-backtest",
+        script="backtest_optinet.py",
+        summary="Run the OptiNet daily options backtester.",
+        example="uv run intradaynet optinet-backtest --model results/models/optinet/optinet_balanced.pkl --index data/index.csv --options data/options.csv",
+    ),
+    CommandSpec(
+        name="optinet-evaluate",
+        script="evaluate_optinet.py",
+        summary="Run OptiNet train, walk-forward, blind backtest, confidence diagnostics, and readiness gates.",
+        example="uv run intradaynet optinet-evaluate --index optinet_data/index/index_spot_daily.csv --options optinet_data/options/options_eod_2021.csv --train-start 2021-01-01 --train-end 2025-12-31 --blind-start 2026-01-01 --blind-end 2026-04-30",
+    ),
+    CommandSpec(
+        name="equity-evaluate",
+        script="evaluate_equity.py",
+        summary="Wrap an existing IntradayNet equity backtest summary in the shared readiness gate.",
+        example="uv run intradaynet equity-evaluate --model models/intraday_model_nifty500.pkl --summary results/backtests/backtest_results/summary.json --start 2026-01-01 --end 2026-03-31",
+    ),
+    CommandSpec(
+        name="paper-ledger",
+        script="paper_ledger.py",
+        summary="Create a paper-trading ledger from gated model recommendations.",
+        example="uv run intradaynet paper-ledger --system optinet --model results/models/optinet/optinet_balanced.pkl --index data/index.csv --options data/options.csv",
+    ),
+    CommandSpec(
+        name="reconcile-paper",
+        script="reconcile_paper.py",
+        summary="Reconcile paper-trading ledger rows against next-day option-chain outcomes.",
+        example="uv run intradaynet reconcile-paper --ledger outputs/paper/optinet_paper_ledger.csv --index data/index.csv --options data/options.csv",
+    ),
+    CommandSpec(
+        name="equity-paper-ledger",
+        script="equity_paper_ledger.py",
+        summary="Create an IntradayNet equity paper-trading ledger from recommendation JSON.",
+        example="uv run intradaynet equity-paper-ledger --recommendations recommendations/morning_picks.json --output outputs/paper/equity_paper_ledger.csv",
+    ),
+    CommandSpec(
+        name="reconcile-equity-paper",
+        script="reconcile_equity_paper.py",
+        summary="Reconcile equity paper-trading ledger rows against minute bars.",
+        example="uv run intradaynet reconcile-equity-paper --ledger outputs/paper/equity_paper_ledger.csv --data-dir nifty500",
+    ),
+    CommandSpec(
+        name="system-status",
+        script="trading_system_status.py",
+        summary="Create one governed readiness snapshot for equity and options systems.",
+        example="uv run intradaynet system-status --output outputs/system/trading_system_status.json",
+    ),
 )
 
 

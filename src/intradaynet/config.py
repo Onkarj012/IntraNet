@@ -122,6 +122,12 @@ def load_config(config_path: str) -> IntradayConfig:
     model_data = data.get('model', {})
     model_data.pop('tcn', None)
     model_cfg = ModelConfig(**model_data, tcn=tcn_cfg)
+    try:
+        from intradaynet.features.sentiment_features import SENTIMENT_FEATURE_NAMES
+
+        model_cfg.num_sentiment_features = len(SENTIMENT_FEATURE_NAMES)
+    except Exception:
+        pass
 
     data_cfg = DataConfig(**data.get('data', {}))
     splits_cfg = SplitsConfig(**data.get('splits', {}))

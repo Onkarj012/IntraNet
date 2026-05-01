@@ -20,10 +20,9 @@ console = Console()
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Render a V7 deployability/readiness report.")
-    defaults = default_readiness_paths(PROJECT_ROOT)
-    parser.add_argument("--locked-backtest-summary", default=str(defaults["locked_backtest"]))
-    parser.add_argument("--forward-summary", default=str(defaults["forward_blind"]))
     parser.add_argument("--mode", choices=("premarket", "post-open"), default="premarket")
+    parser.add_argument("--locked-backtest-summary", default="")
+    parser.add_argument("--forward-summary", default="")
     parser.add_argument("--freshness-ok", action="store_true")
     parser.add_argument("--live-symbols", type=int, default=0)
     parser.add_argument("--processed-symbols", type=int, default=0)
@@ -33,8 +32,9 @@ def parse_args() -> argparse.Namespace:
 
 def main() -> int:
     args = parse_args()
-    locked_summary = load_json_if_exists(Path(args.locked_backtest_summary))
-    forward_summary = load_json_if_exists(Path(args.forward_summary))
+    defaults = default_readiness_paths(PROJECT_ROOT, mode=args.mode)
+    locked_summary = load_json_if_exists(Path(args.locked_backtest_summary or defaults["locked_backtest"]))
+    forward_summary = load_json_if_exists(Path(args.forward_summary or defaults["forward_blind"]))
     readiness = evaluate_readiness(
         locked_backtest_summary=locked_summary,
         forward_summary=forward_summary,

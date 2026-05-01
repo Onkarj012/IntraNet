@@ -1,120 +1,99 @@
-# 🌅 Morning Picks System (`morning_picks.py`)
+# Morning Picks CLI
 
-The **Morning Picks** script is a pre-market recommendation engine powered by the **IntradayNet** architecture. It is designed to be run just before the market opens (around 8:30 AM - 9:15 AM).
+This is the current recommendation workflow for IntradayNet. The unified CLI command is `intradaynet picks`, which maps to `scripts/recommend_intraday.py`.
 
-It downloads the latest live minute-level stock data and macroeconomic indicators (VIX, Crude, Gold, USD/INR, NIFTY 50), computes per-bar and session features, integrates news sentiment analysis, and runs inference through your trained Deep Learning models (ResNLS, TCN, Compact CNN, LightGBM, etc.).
+Use `premarket` when you want picks before the open from the latest completed session. Use `post-open` when you want gap-aware picks after the first live bars are available.
 
-It outputs a concise, actionable list of the **Top LONG and SHORT picks** for the day, including exact **Entry**, **Target**, and **Stop Loss** levels based on the model's magnitude predictions.
+## Common Commands
 
----
-
-## 🚀 Quick Start Guide
-
-### 0. Install With `uv`
-Use `uv` to create the environment and expose the package CLI:
+Premarket, with explicit pick counts:
 
 ```bash
-uv sync
+uv run intradaynet picks --mode premarket --long-count 5 --short-count 5
 ```
 
-You can now run the unified CLI with:
+Post-open, with explicit pick counts:
 
 ```bash
-uv run intradaynet --help
+uv run intradaynet picks --mode post-open --post-open-cutoff 09:30 --long-count 5 --short-count 5
 ```
 
-### 1. Basic PyTorch Execution
-Run the script using the best compiled PyTorch model inside your `runs/intraday/` directory.
+If you prefer the script directly:
 
 ```bash
-uv run intradaynet picks --model runs/intraday/resnls/best_model.pt
+python scripts/recommend_intraday.py --mode premarket --long-count 5 --short-count 5
+python scripts/recommend_intraday.py --mode post-open --post-open-cutoff 09:30 --long-count 5 --short-count 5
 ```
 
-### 2. Basic LightGBM Execution
-Run the script using a folder containing the LightGBM booster `.lgb` files.
+Useful variants:
 
 ```bash
-uv run intradaynet picks --model runs/lgbm/
+uv run intradaynet picks --mode premarket --target-date 2026-04-24 --long-count 3 --short-count 2
+uv run intradaynet picks --mode post-open --target-date 2026-04-24 --post-open-cutoff 09:30 --long-count 3 --short-count 2
+uv run intradaynet picks --mode premarket --industry "Information Technology" --long-count 3 --short-count 2
+uv run intradaynet picks --mode post-open --industry "Automobile and Auto Components, Financial Services" --post-open-news-cutoff 09:20
+uv run intradaynet picks --mode premarket --save-csv recommendations/picks.csv --save-json recommendations/picks.json
+uv run intradaynet picks --mode post-open --allow-below-preferred --long-count 5 --short-count 5
 ```
 
-### 3. Save Output to CSV
-To keep a record of the recommendations or pass them to another trading bot/script.
+## What The Main Flags Do
+
+| Flag | Default | What it controls |
+| :--- | :--- | :--- |
+| `--mode` | `premarket` | Chooses premarket or post-open scoring.
+| `--long-count` | `3` | Number of LONG picks to return.
+| `--short-count` | `2` | Number of SHORT picks to return.
+| `--per-side` | `-1` | Overrides both long and short counts with the same value.
+| `--target-date` | next business day | Picks-for date in `YYYY-MM-DD` format.
+| `--industry` | all industries | Filters the universe to one or more exact CSV industry values. Repeat the flag or pass a comma-separated list.
+| `--post-open-cutoff` | `09:30` | Cutoff time used in post-open mode.
+| `--post-open-news-cutoff` | `09:20` | Latest live-news timestamp included in post-open mode.
+| `--post-open-min-alignment` | `0.05` | Minimum same-day alignment score in post-open mode.
+| `--risk-profile` | `balanced` | Selects the default threshold bundle.
+| `--min-confidence` | profile default | Overrides the minimum confidence gate.
+| `--min-predicted-magnitude` | profile default | Overrides the minimum predicted magnitude gate.
+| `--max-stocks` | `0` | Limits how many symbols are scored.
+| `--allow-below-preferred` | off | Backfills requested slots with below-threshold names if not enough preferred picks exist.
+| `--max-feature-staleness-bdays` | `0` | Rejects symbols whose latest feature row is too old.
+| `--target-pct` | profile default | Sets the target level used for entry/target calculations.
+| `--stop-loss-pct` | profile default | Sets the stop-loss level used for entry/stop calculations.
+| `--refresh-yfinance` / `--no-refresh-yfinance` | on | Enables or disables price backfill from `yfinance`.
+| `--disable-live-news` | off | Disables live `yfinance` news and falls back to historical sentiment rows only.
+| `--live-news-required` | off | Fails the run if live-news coverage is too low.
+| `--save-csv` | `default` | Writes the ranked picks CSV into `recommendations/` unless you pass a path.
+| `--save-json` | `default` | Writes the full JSON payload into `recommendations/` unless you pass a path.
+
+## Recommended Settings
+
+For higher precision, start with:
 
 ```bash
-uv run intradaynet picks --model runs/intraday/resnls/best_model.pt --save-csv today_picks.csv
+uv run intradaynet picks --mode premarket --risk-profile balanced --long-count 3 --short-count 2
 ```
 
-### 4. Skip Live Data Download (Dry Run / Testing)
-Useful if you have already downloaded the data and just want to tweak prediction thresholds without waiting for `yfinance` to update again.
+For post-open, the default cutoff is usually enough:
 
 ```bash
-uv run intradaynet picks --model runs/intraday/resnls/best_model.pt --no-download
+uv run intradaynet picks --mode post-open --post-open-cutoff 09:30 --risk-profile balanced --long-count 3 --short-count 2
 ```
 
-### 5. Get Picks for a Specific Past Date (Backtesting proxy)
-Generates predictions specifically for the date provided but *only* trained on data up to the previous day.
+If you want only preferred picks and are willing to accept fewer total names, leave `--allow-below-preferred` off. If you want the requested count no matter what, add `--allow-below-preferred`.
 
-```bash
-uv run intradaynet picks --model runs/lgbm/ --date 2026-03-12
-```
+## Output
 
-```bash
-uv run intradaynet picks --model runs/lgbm/ --date 2026-04-01 --max-price 1000 --top-n 15 --horizon H375
-```
+The CLI prints ranked LONG and SHORT tables with:
 
----
+- `Pref` indicating whether the pick passes the preferred filter.
+- `Conf` showing the adjusted confidence.
+- `Score` showing the ranking score used to sort picks.
+- `Target` and `Stop` showing the computed trade levels.
 
-## 🛠️ Detailed Parameter Reference
+The JSON output also includes the full recommendation payload, readiness check, and summary counts.
 
-The script is highly customizable through its command-line arguments. Here is every parameter detailed:
+## Notes
 
-### Core Parameters
-| Argument | Type | Default | Description |
-| :--- | :--- | :--- | :--- |
-| `--model` | `str` | **Required** | The path to your compiled model. Can be a `.pt` PyTorch checkpoint file or a directory path containing your `.lgb` LightGBM models. |
-| `--config` | `str` | `configs/intraday_config.yaml` | Path to the YAML configuration file defining the model architecture, feature spaces, and data paths. |
-
-### Prediction Adjustments
-| Argument | Type | Default | Description |
-| :--- | :--- | :--- | :--- |
-| `--horizon` | `str` | `"H60"` | The prediction horizon timeframe to infer. Valid options depend on your `configs/intraday_config.yaml` but typically include: `H15` (15 mins), `H30` (30 mins), `H60` (1 hour), `H375` (Full day). |
-| `--dir-threshold`| `float`| `0.60` | The minimum probability threshold the direction model must hit to classify a stock as a LONG (≥0.60) or SHORT (≤0.40). Increase this for higher accuracy / fewer picks. |
-| `--min-confidence`| `float`| `0.55` | The minimum confidence score output by the PyTorch model (or calculated proxy for LightGBM). Filters out uncertain picks. |
-
-### Output Formatting and Options
-| Argument | Type | Default | Description |
-| :--- | :--- | :--- | :--- |
-| `--top-n` | `int` | `5` | The maximum number of recommendations to show for EACH direction (e.g., `5` means up to 5 longs and 5 shorts). |
-| `--save-csv` | `str` | `""` (None) | If provided, writes the formatted picks (with entry, target, SL, confidence) to the specified CSV file path. |
-| `--date` | `str` | `""` (None) | Generates picks for this specific date (`YYYY-MM-DD`). Automatically restricts data lookup to the day *prior*. If omitted, it auto-detects the next trading day from the most recent CSV data. |
-
-### Trading Data Integration
-| Argument | Type | Default | Description |
-| :--- | :--- | :--- | :--- |
-| `--max-price` | `float`| `0` (None) | Filters out any stock from the recommendation list whose closing price is HIGHER than this value. Useful for small accounts restricting expensive stocks. |
-| `--stop-loss` | `float`| `0.01` | The default stop-loss percentage to apply to entry prices. `0.01` equals 1%. Used to calculate the strict Stop-Loss limit outputted in the tables. |
-| `--no-download`| `flag` | `False` | Skips connecting to `yfinance` to append the latest minute-level data. The script will ONLY use the currently existing `.csv` minute files. |
-| `--max-stocks` | `int` | `0` (All) | Limits the processing pipeline to the first `N` stocks found in your minute data directory. Useful for quick debugging. |
-
----
-
-## 📊 How It Works under the hood
-
-1. **Initialization:** The script reads `--config` to reconstruct the `SentimentFeatureBuilder` and `MarketFeatureBuilder` matching your model's pipeline structure.
-2. **Data Syncing:** Unless `--no-download` is passed, the script iterates over the minute-level CSVs inside your data directory, determines the last recorded timestamp, and pulls new 1-minute interval data via `yfinance` to bridge the gap up to the current moment.
-3. **Macro Downloads:** Connects and downloads the latest data for indices, crude oil, gold, and VIX to populate `context_t` session features.
-4. **Feature Extraction:** For each stock, it converts the raw minute rows into sequence sliding windows (length `seq_length`). It parses news sentiment if configured.
-5. **Inference Execution:**
-   - **PyTorch (ResNLS/Compact CNN/TCN):** Computes confidence, direction, and magnitude tensors through `torch.no_grad()`. Checks backward compatibility between old 14-feature vs 24-feature sentiment layers.
-   - **LightGBM:** Flattens the feature window sequence using rolling means and standard deviations (W=5, 30, 120), then predicts via the direction and magnitude booster `.lgb` binaries.
-6. **Risk Management & Filtering:** It removes predictions failing `--dir-threshold`, `--min-confidence`, or `--max-price`. It generates a composite "Score" mapping `Confidence * Magnitude`.
-7. **Ranking & Presentation:** Sorts recommendations by **Score**. Outputs a clean CLI Dashboard using the `Rich` Python library and saves it optionally to `--save-csv`.
-
----
-## ✨ Interpreting the Output Table
-
-Once the predictions complete, you will see a stylized summary:
-* **Score:** The primary ranking metric. Higher score implies higher confidence coupled with a larger predicted price movement.
-* **Target (₹):** The exact calculated Exit limit based on Model's specific `Magnitude` prediction.
-* **Stop Loss (₹):** The calculated safety-net price based exactly on the `--stop-loss` fraction you set.
-* **Last Close (₹):** The actual closing price representing the Entry trigger from `yfinance`.
+- Premarket mode uses the latest completed session and refreshed macro/news inputs.
+- Live news is the default recommendation input. Historical sentiment CSV data is used as rolling fallback context and for training/backtests.
+- Premarket news is cut off at market open (`09:15`) for the target trading day, so overnight articles flow into the next session.
+- Post-open mode uses the same base model but reranks with the live opening session up to the price cutoff, and only includes live news up to `--post-open-news-cutoff`.
+- If `--max-feature-staleness-bdays 0` is left at the default, stale symbols are filtered out aggressively.

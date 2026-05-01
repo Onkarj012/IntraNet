@@ -24,7 +24,7 @@ dev = [
 ]
 
 [tool.hatch.build.targets.wheel]
-packages = ["src/intradaynet"]
+packages = ["src/intradaynet", "src/optinet"]
 
 [build-system]
 requires = ["hatchling"]

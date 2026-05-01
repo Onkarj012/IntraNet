@@ -11,6 +11,7 @@ from intradaynet.features.sentiment_features import (
     SentimentFeatureBuilder,
 )
 from intradaynet.v7 import FEATURE_VERSION, TARGET_VERSION, compute_directional_targets
+from intradaynet.universe import get_symbol_metadata
 
 
 DAILY_FEATURE_FAMILY_PREFIXES: dict[str, tuple[str, ...]] = {
@@ -146,9 +147,21 @@ def build_open_safe_daily_features(
     for col in SENTIMENT_FEATURE_NAMES:
         features[col] = sentiment[col]
 
+    symbol_metadata = get_symbol_metadata(symbol, getattr(sentiment_builder, "universe_metadata_csv", None))
+    sector_context = market_builder.get_sector_context(features.index, industry=symbol_metadata.get("industry", ""))
+    for key, series in sector_context.items():
+        if key in features.columns:
+            features[key] = series
+
     features["sector_relative_strength"] = (
         features["price_momentum_5d"] - features["sector_intraday_return"]
     ).clip(-0.25, 0.25)
+    features["stock_vs_sector_1d"] = (
+        features["prev_day_return"] - features["sector_index_prev_return"]
+    ).clip(-0.25, 0.25)
+    features["stock_vs_sector_5d"] = (
+        features["price_momentum_5d"] - features["sector_index_5d_return"]
+    ).clip(-0.5, 0.5)
     features["breadth_momentum_confirmation"] = (
         np.sign(features["price_momentum_5d"]).fillna(0.0) * features["market_breadth"]
     ).clip(-1.0, 1.0)

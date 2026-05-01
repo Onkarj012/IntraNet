@@ -23,6 +23,14 @@ from intradaynet.features.sentiment_features import (
     SentimentFeatureBuilder,
     SENTIMENT_FEATURE_NAMES,
 )
+from intradaynet.features.market_features import MarketFeatureBuilder
+from intradaynet.live_news import normalize_historical_sentiment_csv
+from intradaynet.universe import (
+    filter_symbols_by_industry,
+    get_symbol_to_industry_map,
+    get_universe_metadata,
+    resolve_industry_filters,
+)
 
 
 def _make_minute_df(n_days=3, bars_per_day=375, base_price=100.0):
@@ -140,6 +148,56 @@ class TestSentimentFeatures:
         dates = pd.date_range("2024-01-01", periods=5, freq="D")
         features = builder.get_features("RELIANCE", dates)
         assert (features.values == 0).all()
+
+    def test_universe_metadata_loader(self):
+        metadata = get_universe_metadata()
+        assert len(metadata) == 500
+        assert "symbol" in metadata.columns
+        assert "industry" in metadata.columns
+        assert get_symbol_to_industry_map()["TCS"] == "Information Technology"
+
+    def test_industry_filter_resolution(self):
+        resolved = resolve_industry_filters(["information technology, healthcare"])
+        assert "Information Technology" in resolved
+        assert "Healthcare" in resolved
+        filtered = filter_symbols_by_industry(["TCS", "SUNPHARMA", "RELIANCE"], ["Information Technology"])
+        assert filtered == ["TCS"]
+
+    def test_historical_news_cutoff_trade_dates(self, tmp_path: Path):
+        csv_path = tmp_path / "sentiment.csv"
+        pd.DataFrame(
+            [
+                {"Symbol": "TCS", "Publish Date": "2026-04-23 22:00:00", "sentiment_score": 0.8},
+                {"Symbol": "TCS", "Publish Date": "2026-04-24 09:18:00", "sentiment_score": 0.3},
+                {"Symbol": "TCS", "Publish Date": "2026-04-24 09:25:00", "sentiment_score": -0.2},
+            ]
+        ).to_csv(csv_path, index=False)
+        normalized = normalize_historical_sentiment_csv(csv_path, post_open_cutoff="09:20")
+        premarket_dates = normalized["premarket_trade_date"].dt.strftime("%Y-%m-%d").tolist()
+        post_open_dates = normalized["post_open_trade_date"].dt.strftime("%Y-%m-%d").tolist()
+        assert premarket_dates == ["2026-04-24", "2026-04-27", "2026-04-27"]
+        assert post_open_dates == ["2026-04-24", "2026-04-24", "2026-04-27"]
+
+    def test_industry_aggregation_and_sector_context(self, tmp_path: Path):
+        csv_path = tmp_path / "sentiment.csv"
+        pd.DataFrame(
+            [
+                {"Symbol": "TCS", "Publish Date": "2026-04-23 21:30:00", "sentiment_score": 0.8},
+                {"Symbol": "INFY", "Publish Date": "2026-04-23 22:00:00", "sentiment_score": 0.4},
+                {"Symbol": "SUNPHARMA", "Publish Date": "2026-04-23 22:10:00", "sentiment_score": -0.5},
+            ]
+        ).to_csv(csv_path, index=False)
+        builder = SentimentFeatureBuilder(str(csv_path), mode="premarket")
+        dates = pd.DatetimeIndex([pd.Timestamp("2026-04-24")])
+        features = builder.get_features("TCS", dates)
+        assert features.iloc[0]["premarket_sentiment"] > 0
+        assert features.iloc[0]["industry_premarket_sentiment"] > 0
+        assert features.iloc[0]["industry_premarket_sentiment_count"] > 0
+
+        market_builder = MarketFeatureBuilder()
+        sector_context = market_builder.get_sector_context(dates, industry="Information Technology")
+        assert "sector_index_prev_return" in sector_context
+        assert "secondary_sector_confirmation" in sector_context
 
 
 if __name__ == "__main__":
