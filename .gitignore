@@ -59,6 +59,8 @@ features_cache/
 nifty500/
 !nifty500/.gitkeep
 
+nifty500.zip
+
 prebatched_v2/
 !prebatched_v2/.gitkeep
 
