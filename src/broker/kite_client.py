@@ -1,16 +1,16 @@
 """Zerodha Kite Connect client.
 
 Handles:
-- Headless daily login (TOTP, no browser)
+- Daily browser-based login (opens Kite login URL, catches redirect via local server)
 - Instrument token resolution for futures/spot
-- Historical minute candle fetch with OI
+- Historical minute candle fetch with OI (auto-chunked in 59-day windows)
 - Access token persistence to .env
 
 Usage:
     from broker.kite_client import KiteClient
     kite = KiteClient.from_env()
-    kite.login()
-    df = kite.historical_minute("NIFTY", "FUT", from_dt, to_dt)
+    kite.login()                                          # opens browser once
+    df = kite.historical_minute(token, from_dt, to_dt)
 """
 from __future__ import annotations
 
@@ -28,10 +28,6 @@ from kiteconnect import KiteConnect
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 ENV_FILE = REPO_ROOT / ".env"
-
-# Kite login endpoints (not in pykiteconnect SDK)
-_LOGIN_URL = "https://kite.zerodha.com/api/login"
-_TWOFA_URL = "https://kite.zerodha.com/api/twofa"
 
 
 def _write_env(key: str, value: str) -> None:
@@ -80,7 +76,6 @@ class KiteClient:
             api_secret=os.environ["KITE_API_SECRET"],
             user_id=os.environ["KITE_USER_ID"],
             password=os.environ["KITE_PASSWORD"],
-            totp_secret=os.environ.get("KITE_TOTP_SECRET", ""),
         )
 
     # ── Login ──────────────────────────────────────────────────────────────
@@ -174,7 +169,14 @@ class KiteClient:
         if futs.empty:
             raise ValueError(f"No live FUT contracts found for {symbol}")
         if expiry:
-            row = futs[futs["expiry"] == expiry].iloc[0]
+            matching = futs[futs["expiry"] == expiry]
+            if matching.empty:
+                available = futs["expiry"].tolist()
+                raise ValueError(
+                    f"No FUT contract for {symbol} expiry={expiry}. "
+                    f"Available: {available}"
+                )
+            row = matching.iloc[0]
         else:
             row = futs.iloc[0]  # nearest expiry
         return int(row["instrument_token"]), row["expiry"]
