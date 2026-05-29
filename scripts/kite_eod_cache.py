@@ -90,11 +90,13 @@ def _append_nifty_minute(df: pd.DataFrame) -> int:
     existing["dt"] = pd.to_datetime(existing["date"])
     last_dt = existing["dt"].max()
 
-    new = df[df["date"] > last_dt].copy()
+    # Normalize df["date"] to tz-naive for comparison
+    df_dates = df["date"].dt.tz_localize(None) if df["date"].dt.tz is not None else df["date"]
+    new = df[df_dates > last_dt].copy()
     if new.empty:
         return 0
     out = pd.DataFrame({
-        "date": new["date"].dt.strftime("%Y-%m-%d %H:%M:%S"),
+        "date": df_dates[new.index].dt.strftime("%Y-%m-%d %H:%M:%S"),
         "open": new["open"].round(2),
         "high": new["high"].round(2),
         "low": new["low"].round(2),
