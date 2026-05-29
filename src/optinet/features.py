@@ -165,6 +165,28 @@ def build_fo_features(option_chain_with_spot: pd.DataFrame) -> pd.DataFrame:
     )
     feat["pcr_oi_change_1d"] = feat.groupby("index")["pcr_oi"].diff()
     feat["pcr_oi_5d_avg"] = feat.groupby("index")["pcr_oi"].transform(lambda s: s.rolling(5, min_periods=2).mean())
+
+    # OptiNet v2.2: 60-day rolling-median ratios for level-sensitive features.
+    # Absolute levels of PCR/OI/wall-distance drifted heavily after NSE expanded
+    # weekly expiries in 2024Q1, so we add ratio-form versions that are regime-robust.
+    def _rolling_median_ratio(group: pd.Series, window: int = 60, min_periods: int = 20) -> pd.Series:
+        med = group.rolling(window, min_periods=min_periods).median().replace(0, np.nan)
+        return group / med
+
+    LEVEL_FEATURES = [
+        "pcr_oi", "pcr_volume",
+        "call_oi_concentration", "put_oi_concentration",
+        "call_wall_distance", "put_wall_distance",
+        "total_oi_change",
+    ]
+    for col in LEVEL_FEATURES:
+        if col in feat.columns:
+            feat[f"{col}_norm60"] = (
+                feat.groupby("index", group_keys=False)[col]
+                    .apply(_rolling_median_ratio)
+                    .reset_index(level=0, drop=True)
+            )
+
     spot_change = feat.groupby("index")["spot"].pct_change()
     oi_change = feat["total_oi_change"]
     feat["oi_buildup_signal"] = np.select(
@@ -209,6 +231,9 @@ def build_training_frame(
     *,
     market_builder=None,
     sentiment_builder=None,
+    include_sentiment_cache: bool = True,
+    include_gdelt: bool = True,
+    include_regime: bool = True,
 ) -> pd.DataFrame:
     index_features = build_index_features(index_bars)
     fo_features = build_fo_features(option_chain_with_spot)
@@ -218,6 +243,40 @@ def build_training_frame(
     macro = build_macro_sentiment_features(frame[["index", "date"]], market_builder=market_builder, sentiment_builder=sentiment_builder)
     if not macro.empty:
         frame = frame.merge(macro, on=["index", "date"], how="left")
+
+    # OptiNet v2.1: index sentiment cache (yfinance + RSS aggregated daily)
+    if include_sentiment_cache:
+        try:
+            from optinet.sentiment import load_sentiment_cache
+            sent = load_sentiment_cache()
+            if not sent.empty:
+                sent["date"] = pd.to_datetime(sent["date"]).dt.normalize()
+                frame = frame.merge(sent, on=["index", "date"], how="left")
+        except Exception:
+            pass
+
+    # OptiNet v2.1: GDELT macro/financial event volumes (one column per theme)
+    if include_gdelt:
+        try:
+            from optinet.gdelt import load_gdelt_cache
+            gdelt = load_gdelt_cache()
+            if not gdelt.empty:
+                gdelt["date"] = pd.to_datetime(gdelt["date"]).dt.normalize()
+                frame = frame.merge(gdelt, on="date", how="left")
+        except Exception:
+            pass
+
+    # OptiNet v2.1: regime features + hard-filter flag
+    if include_regime:
+        try:
+            from optinet.regime import compute_regime
+            regime = compute_regime(index_bars)
+            if not regime.empty:
+                regime["date"] = pd.to_datetime(regime["date"]).dt.normalize()
+                frame = frame.merge(regime, on=["index", "date"], how="left")
+        except Exception:
+            pass
+
     numeric = frame.select_dtypes(include=[np.number]).columns
     frame[numeric] = frame.groupby("index", group_keys=False)[numeric].ffill().fillna(0.0)
     return frame.sort_values(["index", "date"]).reset_index(drop=True)

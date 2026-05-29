@@ -26,24 +26,19 @@ from pathlib import Path
 import numpy as np
 import pandas as pd
 from rich.console import Console
-from rich.progress import (
-    BarColumn,
-    Progress,
-    SpinnerColumn,
-    TextColumn,
-    TimeElapsedColumn,
-)
 from rich.table import Table
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(PROJECT_ROOT / "src"))
+
+from intradaynet.universe import get_universe
 
 console = Console()
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
 logger = logging.getLogger("intradaynet.sync")
 
 NSE_SUFFIX = ".NS"
-DATA_DIR = PROJECT_ROOT / "nifty500"
+DATA_DIR = PROJECT_ROOT / "data/nifty500"
 MARKET_DATA_DIR = PROJECT_ROOT / "market_data_cache"
 MARKET_DATA_DIR.mkdir(exist_ok=True, parents=True)
 
@@ -98,31 +93,77 @@ def _download_symbol_history(
     end_date: str,
     interval: str = "1m",
 ) -> pd.DataFrame | None:
-    """Download history for a single symbol from yfinance."""
+    """Download history for a single symbol from yfinance.
+
+    For 1m interval, Yahoo only allows ~8 days per request,
+    so we paginate in 7-day chunks and concatenate.
+    """
     import yfinance as yf
 
     ticker_str = f"{symbol}{suffix}" if suffix else symbol
+
     try:
-        ticker = yf.Ticker(ticker_str)
-        df = ticker.history(start=start_date, end=end_date, interval=interval, auto_adjust=True)
-        if df.empty or len(df) < 5:
-            return None
-
-        df = df.reset_index()
-        df.columns = [c.lower().replace(" ", "_") for c in df.columns]
-
-        if "datetime" in df.columns:
-            df = df.rename(columns={"datetime": "date"})
-        elif "timestamp" in df.columns:
-            df = df.rename(columns={"timestamp": "date"})
-        elif "date" not in df.columns and df.columns[0].lower() in ("open", "date"):
-            df = df.rename(columns={df.columns[0]: "date"})
-
-        df["date"] = pd.to_datetime(df["date"]).dt.strftime("%Y-%m-%d %H:%M:%S")
-        return df
+        if interval == "1m":
+            return _download_1m_paginated(ticker_str, start_date, end_date)
+        else:
+            ticker = yf.Ticker(ticker_str)
+            df = ticker.history(start=start_date, end=end_date, interval=interval, auto_adjust=True)
+            if df.empty or len(df) < 5:
+                return None
+            return _normalize_yf_dataframe(df)
     except Exception as e:
         logger.debug(f"Failed {symbol}: {e}")
         return None
+
+
+def _download_1m_paginated(ticker_str: str, start_date: str, end_date: str) -> pd.DataFrame | None:
+    """Download 1-minute data in 7-day chunks to respect Yahoo's ~8-day limit."""
+    import yfinance as yf
+
+    start_dt = pd.Timestamp(start_date)
+    end_dt = pd.Timestamp(end_date)
+
+    chunks = []
+    chunk_start = start_dt
+    while chunk_start < end_dt:
+        chunk_end = min(chunk_start + timedelta(days=7), end_dt)
+        if chunk_end <= chunk_start:
+            break
+        try:
+            ticker = yf.Ticker(ticker_str)
+            df = ticker.history(
+                start=chunk_start.strftime("%Y-%m-%d"),
+                end=chunk_end.strftime("%Y-%m-%d"),
+                interval="1m",
+                auto_adjust=True,
+            )
+            if not df.empty and len(df) >= 5:
+                df = _normalize_yf_dataframe(df)
+                chunks.append(df)
+        except Exception:
+            pass
+        chunk_start = chunk_end + timedelta(days=1)
+
+    if not chunks:
+        return None
+    result = pd.concat(chunks).sort_values("date").drop_duplicates(subset=["date"], keep="last")
+    return result if len(result) >= 5 else None
+
+
+def _normalize_yf_dataframe(df: pd.DataFrame) -> pd.DataFrame:
+    """Normalize yfinance DataFrame columns."""
+    df = df.reset_index()
+    df.columns = [c.lower().replace(" ", "_") for c in df.columns]
+
+    if "datetime" in df.columns:
+        df = df.rename(columns={"datetime": "date"})
+    elif "timestamp" in df.columns:
+        df = df.rename(columns={"timestamp": "date"})
+    elif "date" not in df.columns and df.columns[0].lower() in ("open", "date"):
+        df = df.rename(columns={df.columns[0]: "date"})
+
+    df["date"] = pd.to_datetime(df["date"]).dt.strftime("%Y-%m-%d %H:%M:%S")
+    return df
 
 
 def _append_to_csv(df: pd.DataFrame, csv_path: Path) -> int:
@@ -162,45 +203,24 @@ def sync_stocks(
     updated, skipped, failed = 0, 0, 0
     total = len(symbols)
 
-    with Progress(
-        SpinnerColumn(),
-        TextColumn("{task.description}"),
-        BarColumn(),
-        TextColumn("{task.completed}/{total} ({task.fields[rate]})"),
-        TextColumn("({task.fields[status]})"),
-        TimeElapsedColumn(),
-        console=console,
-        transient=True,
-    ) as progress:
-        task = progress.add_task("Syncing stocks...", total=total, rate="", status="")
+    for i, symbol in enumerate(symbols):
+        csv_path = data_dir / f"{symbol}_minute.csv"
+        status_text = ""
 
-        for i, symbol in enumerate(symbols):
-            csv_path = data_dir / f"{symbol}_minute.csv"
-            progress.update(task, description=f"[{i+1}/{total}] {symbol}")
-
-            if csv_path.exists():
-                last_date = _get_last_date(csv_path)
-                if last_date:
-                    progress.update(task, status=f"last: {last_date}")
-                    if not dry_run:
-                        df = _download_symbol_history(symbol, NSE_SUFFIX, last_date, end_date)
-                        n = _append_to_csv(df, csv_path)
-                        if n > 0:
-                            updated += 1
-                        else:
-                            skipped += 1
+        if csv_path.exists():
+            last_date = _get_last_date(csv_path)
+            if last_date:
+                if not dry_run:
+                    df = _download_symbol_history(symbol, NSE_SUFFIX, last_date, end_date)
+                    n = _append_to_csv(df, csv_path)
+                    if n > 0:
+                        updated += 1
+                        status_text = f"updated +{n}"
                     else:
                         skipped += 1
+                        status_text = "up to date"
                 else:
-                    if not dry_run:
-                        df = _download_symbol_history(symbol, NSE_SUFFIX, start_date, end_date)
-                        n = _append_to_csv(df, csv_path)
-                        if n > 0:
-                            updated += 1
-                        else:
-                            skipped += 1
-                    else:
-                        skipped += 1
+                    skipped += 1
             else:
                 if not dry_run:
                     df = _download_symbol_history(symbol, NSE_SUFFIX, start_date, end_date)
@@ -210,13 +230,21 @@ def sync_stocks(
                     else:
                         skipped += 1
                 else:
-                    progress.update(
-                        task,
-                        status=f"[yellow]DRY RUN: would download {symbol}[/yellow]",
-                    )
                     skipped += 1
+        else:
+            if not dry_run:
+                df = _download_symbol_history(symbol, NSE_SUFFIX, start_date, end_date)
+                n = _append_to_csv(df, csv_path)
+                if n > 0:
+                    updated += 1
+                    status_text = f"created ({n} rows)"
+                else:
+                    failed += 1
+                    status_text = "no data"
+            else:
+                skipped += 1
 
-            progress.update(task, advance=1, rate=f"{i+1}/{total}")
+        console.print(f"  [{i+1}/{total}] {symbol} {status_text}")
 
     return updated, skipped, failed
 
@@ -268,6 +296,12 @@ def sync_nifty500_universe(data_dir: Path) -> tuple[list[str], list[str]]:
 
 def parse_args():
     parser = argparse.ArgumentParser(description="Sync latest market data from yfinance")
+    parser.add_argument(
+        "--universe",
+        type=str,
+        default=None,
+        help="Seed download for a specific universe (nifty50, nifty100, nifty200, nifty500)",
+    )
     parser.add_argument("--max-stocks", type=int, default=0, help="Limit stocks (0=all)")
     parser.add_argument("--dry-run", action="store_true", help="Show what would be synced")
     parser.add_argument("--full", action="store_true", help="Re-download full history (slow)")
@@ -297,10 +331,16 @@ def main():
     end_date = datetime.now().strftime("%Y-%m-%d")
     start_date = args.start_date if args.full else "2020-01-01"
 
-    symbols = _get_stock_symbols(DATA_DIR)
-    if not symbols:
-        console.print("[yellow]No stock CSVs found in nifty500/. Nothing to sync.[/yellow]")
-        return
+    if args.universe:
+        symbols = get_universe(args.universe)
+        DATA_DIR.mkdir(parents=True, exist_ok=True)
+        console.print(f"  Seeding universe [cyan]{args.universe}[/cyan] with [green]{len(symbols)}[/green] stocks")
+    else:
+        symbols = _get_stock_symbols(DATA_DIR)
+        if not symbols:
+            console.print("[yellow]No stock CSVs found in nifty500/. Nothing to sync.[/yellow]")
+            console.print("[yellow]Use --universe nifty100 to download data for the first time.[/yellow]")
+            return
 
     console.print(f"  Stock universe: [green]{len(symbols)}[/green] stocks")
     console.print(f"  Date range: {start_date} → {end_date}")
@@ -313,7 +353,7 @@ def main():
     console.print("[bold]Syncing stock minute bars...[/bold]")
     u, s, f = sync_stocks(symbols, DATA_DIR, start_date, end_date, dry_run=args.dry_run)
 
-    console.print(f"\n  Stock sync: [green]{u}[/green] updated, [cyan]{s}[/green] skipped, [red]{f}[/red] failed")
+    console.print(f"\n  Stock sync: [green]{u}[/green] updated, [cyan]{s}[/cyan] skipped, [red]{f}[/red] failed")
 
     if not args.no_macro:
         console.print("\n[bold]Syncing market data...[/bold]")

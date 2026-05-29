@@ -14,7 +14,7 @@ from intradaynet.equity_paper import reconcile_equity_paper_ledger
 def main() -> int:
     parser = argparse.ArgumentParser(description="Reconcile an IntradayNet equity paper ledger against minute bars.")
     parser.add_argument("--ledger", required=True)
-    parser.add_argument("--data-dir", default="nifty500")
+    parser.add_argument("--data-dir", default="data/nifty500")
     parser.add_argument("--output", default="outputs/paper/equity_paper_ledger_reconciled.csv")
     parser.add_argument("--brokerage-per-trade", type=float, default=40.0)
     args = parser.parse_args()

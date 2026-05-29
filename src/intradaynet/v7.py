@@ -72,6 +72,135 @@ DEFAULT_STRATEGY_PROFILES: dict[str, StrategyConfig] = {
 }
 
 
+def compute_horizon_targets(
+    minute_df: pd.DataFrame,
+    horizon_bars: int,
+    *,
+    target_pct: float = 0.015,
+    min_tradable_move_pct: float = 0.0075,
+    cost_buffer_pct: float = 0.0018,
+    ambiguity_band_pct: float = 0.0025,
+) -> pd.DataFrame:
+    """
+    Point-in-time horizon-specific target labelling.
+
+    For each minute bar at time t, looks ahead `horizon_bars` bars and labels
+    LONG / SHORT / NO_TRADE based on whether the stock reaches the target
+    within [t, t + horizon_bars].
+
+    This is the P0-correct target function that fixes the daily-label flaw.
+    Each bar gets its own horizon-specific label — no look-ahead beyond the
+    horizon window.
+
+    Returns a DataFrame indexed identically to minute_df with columns:
+        long_executable_move, short_executable_move, trade_edge, edge_gap,
+        trade_label, trade_side_code, long_target, short_target, no_trade_target
+    """
+    if horizon_bars < 1:
+        raise ValueError(f"horizon_bars must be >= 1, got {horizon_bars}")
+
+    close = minute_df["close"].values.astype(np.float64)
+    high = minute_df["high"].values.astype(np.float64)
+    low = minute_df["low"].values.astype(np.float64)
+    n = len(minute_df)
+
+    targets = pd.DataFrame(index=minute_df.index)
+
+    future_high = np.full(n, np.nan, dtype=np.float64)
+    future_low = np.full(n, np.nan, dtype=np.float64)
+    for i in range(n):
+        end = min(i + horizon_bars, n)
+        future_high[i] = np.max(high[i:end])
+        future_low[i] = np.min(low[i:end])
+
+    long_move = np.clip((future_high - close) / np.maximum(close, 1e-9) - cost_buffer_pct, 0, target_pct)
+    short_move = np.clip((close - future_low) / np.maximum(close, 1e-9) - cost_buffer_pct, 0, target_pct)
+    edge_gap = np.abs(long_move - short_move)
+    best_move = np.maximum(long_move, short_move)
+
+    trade_label = np.full(n, "NO_TRADE", dtype=object)
+    long_mask = (long_move >= min_tradable_move_pct) & (long_move > short_move + ambiguity_band_pct)
+    short_mask = (short_move >= min_tradable_move_pct) & (short_move > long_move + ambiguity_band_pct)
+    trade_label[long_mask] = "LONG"
+    trade_label[short_mask] = "SHORT"
+
+    label_series = pd.Series(trade_label, index=minute_df.index)
+    targets["long_executable_move"] = long_move
+    targets["short_executable_move"] = short_move
+    targets["trade_edge"] = best_move
+    targets["edge_gap"] = edge_gap
+    targets["trade_label"] = label_series
+    targets["trade_side_code"] = label_series.map({"LONG": 1, "SHORT": -1, "NO_TRADE": 0}).astype("Int64")
+    targets["long_target"] = (label_series == "LONG").astype("Int64")
+    targets["short_target"] = (label_series == "SHORT").astype("Int64")
+    targets["no_trade_target"] = (label_series == "NO_TRADE").astype("Int64")
+    return targets
+
+
+def compute_horizon_targets_batched(
+    minute_df: pd.DataFrame,
+    horizons: dict[str, int] | None = None,
+    *,
+    target_pct: float = 0.015,
+    min_tradable_move_pct: float = 0.0075,
+    cost_buffer_pct: float = 0.0018,
+    ambiguity_band_pct: float = 0.0025,
+) -> dict[str, pd.DataFrame]:
+    """
+    Compute horizon-specific targets for multiple horizons in a single pass.
+
+    horizons: dict mapping horizon name → number of bars
+              default: {"H15": 15, "H30": 30, "H60": 60, "H375": 375}
+    """
+    if horizons is None:
+        horizons = {"H15": 15, "H30": 30, "H60": 60, "H375": 375}
+
+    close = minute_df["close"].values.astype(np.float64)
+    high = minute_df["high"].values.astype(np.float64)
+    low = minute_df["low"].values.astype(np.float64)
+    n = len(minute_df)
+
+    max_horizon = max(horizons.values())
+    rolling_high = pd.Series(high, index=minute_df.index).rolling(max_horizon, min_periods=1).max().values
+    rolling_low = pd.Series(low, index=minute_df.index).rolling(max_horizon, min_periods=1).min().values
+
+    results: dict[str, pd.DataFrame] = {}
+    for name, horizon_bars in horizons.items():
+        targets = pd.DataFrame(index=minute_df.index)
+
+        future_high = np.full(n, np.nan, dtype=np.float64)
+        future_low = np.full(n, np.nan, dtype=np.float64)
+        for i in range(n):
+            end = min(i + horizon_bars, n)
+            future_high[i] = np.max(high[i:end])
+            future_low[i] = np.min(low[i:end])
+
+        long_move = np.clip((future_high - close) / np.maximum(close, 1e-9) - cost_buffer_pct, 0, target_pct)
+        short_move = np.clip((close - future_low) / np.maximum(close, 1e-9) - cost_buffer_pct, 0, target_pct)
+        edge_gap_val = np.abs(long_move - short_move)
+        best_move = np.maximum(long_move, short_move)
+
+        trade_label = np.full(n, "NO_TRADE", dtype=object)
+        long_mask = (long_move >= min_tradable_move_pct) & (long_move > short_move + ambiguity_band_pct)
+        short_mask = (short_move >= min_tradable_move_pct) & (short_move > long_move + ambiguity_band_pct)
+        trade_label[long_mask] = "LONG"
+        trade_label[short_mask] = "SHORT"
+
+        label_series = pd.Series(trade_label, index=minute_df.index)
+        targets["long_executable_move"] = long_move
+        targets["short_executable_move"] = short_move
+        targets["trade_edge"] = best_move
+        targets["edge_gap"] = edge_gap_val
+        targets["trade_label"] = label_series
+        targets["trade_side_code"] = label_series.map({"LONG": 1, "SHORT": -1, "NO_TRADE": 0}).astype("Int64")
+        targets["long_target"] = (label_series == "LONG").astype("Int64")
+        targets["short_target"] = (label_series == "SHORT").astype("Int64")
+        targets["no_trade_target"] = (label_series == "NO_TRADE").astype("Int64")
+        results[name] = targets
+
+    return results
+
+
 def compute_directional_targets(
     daily_df: pd.DataFrame,
     *,
@@ -377,3 +506,75 @@ def evaluate_readiness(
 
 def strategy_config_to_dict(config: StrategyConfig) -> dict[str, Any]:
     return asdict(config)
+
+
+def extract_sessions(minute_df: pd.DataFrame) -> list[pd.DataFrame]:
+    """
+    Split a multi-day minute DataFrame into per-session DataFrames.
+
+    Each session runs from market open (09:15) to market close (15:30).
+    """
+    if minute_df.empty:
+        return []
+    dates = pd.Series(minute_df.index.normalize()).unique()
+    sessions = []
+    for date in dates:
+        session = minute_df[minute_df.index.normalize() == date].copy()
+        if len(session) > 0:
+            sessions.append(session.sort_index())
+    return sessions
+
+
+def compute_daily_targets_from_minute(
+    minute_df: pd.DataFrame,
+    *,
+    target_pct: float = 0.015,
+    min_tradable_move_pct: float = 0.0075,
+    cost_buffer_pct: float = 0.0018,
+    ambiguity_band_pct: float = 0.0025,
+) -> pd.DataFrame:
+    """
+    Compute H375 (full-session / daily) targets for each session in the data.
+
+    Uses compute_horizon_targets per session with horizon_bars = session length.
+    Returns a per-session summary as daily-level target labels.
+    """
+    sessions = extract_sessions(minute_df)
+    daily_rows = []
+    for session in sessions:
+        if len(session) < 5:
+            continue
+        date = session.index[0].normalize()
+        horizon_targets = compute_horizon_targets(
+            session,
+            horizon_bars=len(session),
+            target_pct=target_pct,
+            min_tradable_move_pct=min_tradable_move_pct,
+            cost_buffer_pct=cost_buffer_pct,
+            ambiguity_band_pct=ambiguity_band_pct,
+        )
+        row = {
+            "date": date,
+                "open": float(session["open"].iloc[0]),
+                "high": float(session["high"].max()),
+                "low": float(session["low"].min()),
+                "close": float(session["close"].iloc[-1]),
+                "volume": float(session["volume"].sum()) if "volume" in session.columns else 0.0,
+                "max_up": float((session["high"].max() - session["open"].iloc[0]) / max(session["open"].iloc[0], 1e-9)),
+                "max_down": float((session["open"].iloc[0] - session["low"].min()) / max(session["open"].iloc[0], 1e-9)),
+                "trade_label": str(horizon_targets["trade_label"].iloc[0]),
+                "trade_side_code": int(horizon_targets["trade_side_code"].iloc[0] or 0),
+                "long_executable_move": float(horizon_targets["long_executable_move"].iloc[0]),
+                "short_executable_move": float(horizon_targets["short_executable_move"].iloc[0]),
+                "long_target": int(horizon_targets["long_target"].iloc[0] or 0),
+                "short_target": int(horizon_targets["short_target"].iloc[0] or 0),
+                "no_trade_target": int(horizon_targets["no_trade_target"].iloc[0] or 0),
+            }
+        daily_rows.append(row)
+
+    if not daily_rows:
+        return pd.DataFrame()
+    result = pd.DataFrame(daily_rows)
+    result = result.set_index("date")
+    result.index = pd.to_datetime(result.index)
+    return result

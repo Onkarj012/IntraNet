@@ -427,7 +427,7 @@ def parse_args():
     parser.add_argument("--max-stocks", type=int, default=100)
     parser.add_argument("--start-date", default="2025-01-01")
     parser.add_argument("--end-date", default="2025-12-31")
-    parser.add_argument("--data-dir", default="nifty500")
+    parser.add_argument("--data-dir", default="data/nifty500")
     parser.add_argument("--output-dir", default="backtest_results")
     parser.add_argument("--capital", type=float, default=100_000.0)
     parser.add_argument("--top-k", type=int, default=0)

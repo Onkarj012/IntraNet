@@ -1,5 +1,5 @@
 # =============================================================================
-# IntradayNet — .gitignore
+# IntradayNet + OptiNet — .gitignore
 # =============================================================================
 
 # ── Python ────────────────────────────────────────────────────────────────────
@@ -13,189 +13,104 @@ __pycache__/
 dist/
 build/
 eggs/
-*.manifest
-*.spec
-pip-log.txt
-pip-delete-this-directory.txt
 
 # Virtual environments
 .venv/
 venv/
 ENV/
-env/
-.conda/
-*.env
-
-# UV package manager
 .uv_cache/
 
-# ── PyTorch / ML Model Artifacts ─────────────────────────────────────────────
-# Trained model checkpoints (large binary files)
-*.pt
-*.pth
-*.ckpt
-*.bin
-*.safetensors
-*.onnx
+# ── Data (large, downloadable/regeneratable) ─────────────────────────────────
+# Nifty 500 minute bars (~20 GB)
+data/nifty500/
+data/nifty_intraday/
+data/banknifty_intraday/
+data/indices_minute/
 
-# LightGBM boosters
-*.lgb
+# F&O raw downloads and parquet lake (~1 GB)
+data/raw/
+data/parquet/
+data/normalized/
+data/metadata/
 
-# Model run directories (checkpoints, logs, metrics)
-runs/
-!runs/.gitkeep
+# Sentiment CSVs (regeneratable)
+data/sentiment/
 
-# ── Training Data & Prebatched ───────────────────────────────────────────────
-# Pre-batched numpy training data
-prebatched/
-!prebatched/.gitkeep
+# yfinance daily CSVs
+data/yfinance_daily/
 
-# Feature caches
-features_cache/
-!features_cache/.gitkeep
+# US stock data
+data/us/
 
-# ── Market Data (downloaded via yfinance) ─────────────────────────────────────
-# Nifty 500 minute-level CSVs (large, downloadable)
-nifty500/
-!nifty500/.gitkeep
+# Option chain data
+data/option_data/
 
-nifty500.zip
+# OptiNet intermediate data
+data/optinet/
 
-prebatched_v2/
-!prebatched_v2/.gitkeep
+# ── Data we DO track ─────────────────────────────────────────────────────────
+# data/prices/ — 42 EOD reference CSVs (13 MB)
+# data/indices/ — nifty_daily.csv, banknifty_daily.csv
+# data/README.md
 
-# Market data cache (VIX, crude, gold, indices)
+# ── Models (large binaries) ──────────────────────────────────────────────────
+models/
+
+# ── Cache & Generated Output ─────────────────────────────────────────────────
+cache/
 market_data_cache/
-!market_data_cache/.gitkeep
+graphify-out/
+outputs/
+nifty500/
 
-# ── Sentiment Data ───────────────────────────────────────────────────────────
-# Sentiment CSVs (large processed data, regeneratable)
-sentiment/
-!sentiment/.gitkeep
-
-# ── Recommendations & Backtest Output ────────────────────────────────────────
-# Generated morning picks
+# ── Results & Recommendations (generated) ────────────────────────────────────
+results/
 recommendations/
-!recommendations/.gitkeep
-
-# Backtest results (generated output)
 backtest_results/
-!backtest_results/.gitkeep
 
-# Recommendation accuracy tracking (user-specific live data)
-recommendations_accuracy.csv
+# ── Logs ──────────────────────────────────────────────────────────────────────
+logs/
+*.log
+
+# ── Ledger (append-only paper trading data) ──────────────────────────────────
+ledger/
 
 # ── Testing ──────────────────────────────────────────────────────────────────
 .pytest_cache/
-*.pytest
 .coverage
 htmlcov/
 .tox/
 .nox/
-*.cover
 
-# ── Jupyter Notebooks ────────────────────────────────────────────────────────
+# ── Jupyter ──────────────────────────────────────────────────────────────────
 .ipynb_checkpoints/
 *.ipynb
 
 # ── IDE & Editor ─────────────────────────────────────────────────────────────
-# VS Code
 .vscode/
-*.code-workspace
-
-# PyCharm
 .idea/
-*.iml
-*.iws
-*.ipr
-
-# Sublime Text
-*.sublime-project
-*.sublime-workspace
-
-# Vim/Neovim
+.codex/
 *.swp
 *.swo
 *~
-.netrwhist
 
-# Cursor / Codex
-.codex/
-
-# ── OS-Specific ──────────────────────────────────────────────────────────────
-# macOS
+# ── OS ───────────────────────────────────────────────────────────────────────
 .DS_Store
-.AppleDouble
-.LSOverride
 ._*
-.Spotlight-V100
-.Trashes
-
-# Windows
 Thumbs.db
-Thumbs.db:encryptable
-ehthumbs.db
-ehthumbs_vista.db
 Desktop.ini
-$RECYCLE.BIN/
-*.stackdump
-[Ddesktop.ini
 
-# Linux
-*~
-.fuse_hidden*
-.directory
-.Trash-*
-.nfs*
-
-# ── Logs & Temporary Files ───────────────────────────────────────────────────
-*.log
-logs/
-.tmp/
-*.tmp
-*.temp
-*.bak
-*.backup
-*.swp
-
-# ── Documentation Build ──────────────────────────────────────────────────────
-docs/_build/
-site/
-
-# ── Market Data (downloaded via yfinance/BhavCopy, regeneratable) ──────────
-data/
-optinet_data/
-
-# ── Generated Outputs ─────────────────────────────────────────────────────────
-outputs/
-!outputs/.gitkeep
-
-# ── Generated Results (backtest output, training predictions) ────────────────
-# Keep .gitkeep sentinels and source scripts, ignore all generated output
-results/*.csv
-results/*.json
-results/*.pkl
-results/*.md
-results/**/*.csv
-results/**/*.json
-results/**/*.pkl
-results/**/*.md
-!results/**/.gitkeep
-
-# ── Cache & Temp ─────────────────────────────────────────────────────────────
-cache/
-
-# Generated reports
-reports/
-paper_trading_results_fixed/
-
-# Graphify output
-graphify-out/
-
-# ── Secrets & Credentials ────────────────────────────────────────────────────
+# ── Secrets ──────────────────────────────────────────────────────────────────
 .env
 .env.*
 *.pem
 *.key
 credentials.json
 secrets.yaml
+
+# ── Misc ─────────────────────────────────────────────────────────────────────
+*.tmp
+*.temp
+*.bak
+*.backup
+flags/

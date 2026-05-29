@@ -212,7 +212,7 @@ def get_universe(name: str) -> List[str]:
         if csv_symbols:
             return csv_symbols
 
-        data_dir = _project_root() / "nifty500"
+        data_dir = _project_root() / "data/nifty500"
         if not data_dir.exists():
             raise ValueError("nifty500 data directory not found and ind_nifty500list.csv is missing")
         symbols = sorted(

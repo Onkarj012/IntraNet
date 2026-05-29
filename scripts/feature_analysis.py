@@ -37,9 +37,9 @@ def parse_args():
     parser.add_argument("--universe", default="nifty100")
     parser.add_argument("--max-stocks", type=int, default=100)
     parser.add_argument("--target-pct", type=float, default=0.01)
-    parser.add_argument("--data-dir", default="nifty500")
+    parser.add_argument("--data-dir", default="data/nifty500")
     parser.add_argument("--market-cache", default="market_data_cache")
-    parser.add_argument("--sentiment-csv", default="sentiment/combined_sentiment_2015_2025.csv")
+    parser.add_argument("--sentiment-csv", default="data/sentiment/combined_sentiment_2015_2025.csv")
     parser.add_argument("--output", default="reports/feature_analysis_open_safe_v2.json")
     return parser.parse_args()
 

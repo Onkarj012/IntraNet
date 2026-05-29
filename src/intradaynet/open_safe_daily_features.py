@@ -5,6 +5,10 @@ from typing import Tuple
 import numpy as np
 import pandas as pd
 
+from intradaynet.feature_contract import (
+    DAILY_FEATURE_NAMES,
+    get_feature_registry,
+)
 from intradaynet.features.market_features import MarketFeatureBuilder
 from intradaynet.features.sentiment_features import (
     SENTIMENT_FEATURE_NAMES,
@@ -174,7 +178,28 @@ def build_open_safe_daily_features(
     features["feature_version_code"] = 7.0
 
     features = features.replace([np.inf, -np.inf], np.nan)
-    return features.dropna()
+    features = features.dropna()
+    if features.empty:
+        return features
+
+    registry = get_feature_registry()
+    missing = registry.validate_daily_frame(list(features.columns))
+    if missing:
+        import logging
+        logger = logging.getLogger("intradaynet.open_safe_daily")
+        logger.warning(
+            "Daily features diverge from canonical contract. Missing: %s. "
+            "Columns present but not in contract will be dropped.",
+            missing[:20],
+        )
+        canonical_cols = [c for c in DAILY_FEATURE_NAMES if c in features.columns]
+        features = features[canonical_cols]
+
+    ordered_cols = [c for c in DAILY_FEATURE_NAMES if c in features.columns]
+    extra_cols = [c for c in features.columns if c not in DAILY_FEATURE_NAMES]
+    features = features[ordered_cols + extra_cols]
+    features.attrs["feature_schema_version"] = "daily_v2"
+    return features
 
 
 def compute_intraday_targets(

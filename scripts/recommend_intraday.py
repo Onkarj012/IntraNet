@@ -290,7 +290,7 @@ def parse_args():
     parser = argparse.ArgumentParser(description="Generate morning picks from the open-safe intraday model")
     parser.add_argument("--model", default="results/models/models/intraday_model_nifty500.pkl")
     parser.add_argument("--universe", default="nifty500")
-    parser.add_argument("--data-dir", default="nifty500")
+    parser.add_argument("--data-dir", default="data/nifty500")
     parser.add_argument("--target-date", default="", help="Trading date to generate picks for (YYYY-MM-DD). Defaults to today/next business day.")
     parser.add_argument("--mode", choices=("premarket", "post-open"), default="premarket")
     parser.add_argument("--post-open-cutoff", default="09:30", help="Use bars up to this market time in post-open mode.")
@@ -368,6 +368,20 @@ def parse_args():
     )
     parser.add_argument("--save-json", type=str, nargs="?", const="default", default="default")
     parser.add_argument("--save-csv", type=str, nargs="?", const="default", default="default")
+    parser.add_argument(
+        "--save-cache",
+        type=str,
+        nargs="?",
+        const="default",
+        default="",
+        help="Cache all per-symbol raw predictions as JSON for fast post-open reuse.",
+    )
+    parser.add_argument(
+        "--from-cache",
+        type=str,
+        default="",
+        help="Load pre-scored predictions from a cache file instead of running full inference.",
+    )
     return parser.parse_args()
 
 

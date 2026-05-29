@@ -6,8 +6,8 @@ device: "mps"
 out_dir: "runs/intraday"
 
 data:
-  minute_data_dir: "nifty500"
-  sentiment_csv: "sentiment/combined_sentiment_2015_2025.csv"
+  minute_data_dir: "data/nifty500"
+  sentiment_csv: "data/sentiment/combined_sentiment_2015_2025.csv"
   market_open: "09:15"
   market_close: "15:30"
   bars_per_session: 375

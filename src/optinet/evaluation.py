@@ -152,23 +152,72 @@ def run_walk_forward(
     *,
     profile: str,
     min_confidence: float,
+    retrain_freq: str = "annual",
 ) -> dict[str, Any]:
+    """Walk-forward evaluation with configurable retraining frequency.
+
+    retrain_freq:
+        'annual'    — retrain at year boundary, test on whole next year
+        'quarterly' — retrain at quarter boundary, test on next quarter
+                       (much more responsive to regime shifts like 2024Q1)
+    """
     dataset = dataset.copy()
     dataset["date"] = pd.to_datetime(dataset["date"], format="mixed", errors="coerce")
-    years = sorted(int(year) for year in dataset["date"].dt.year.dropna().unique())
+    option_chain = option_chain.copy()
+    option_chain["date"] = pd.to_datetime(option_chain["date"], format="mixed", errors="coerce")
     results: dict[str, Any] = {}
-    for test_year in years[2:]:
-        train = dataset[dataset["date"].dt.year < test_year].copy()
-        test = dataset[dataset["date"].dt.year == test_year].copy()
-        if len(train) < 30 or test.empty:
-            continue
-        chain = option_chain[pd.to_datetime(option_chain["date"]).dt.year == test_year].copy()
-        bundle = train_model_stack(train, profile=profile)
-        trades, summary = backtest_daily(bundle, test, chain, profile=profile, min_confidence=min_confidence)
-        results[f"through_{test_year - 1}_to_{test_year}"] = {
-            "train_rows": len(train),
-            "test_rows": len(test),
-            **summarize_trade_frame(trades),
-            "summary": summary,
-        }
+
+    if retrain_freq == "annual":
+        years = sorted(int(year) for year in dataset["date"].dt.year.dropna().unique())
+        for test_year in years[2:]:
+            train = dataset[dataset["date"].dt.year < test_year].copy()
+            test = dataset[dataset["date"].dt.year == test_year].copy()
+            if len(train) < 30 or test.empty:
+                continue
+            chain = option_chain[option_chain["date"].dt.year == test_year].copy()
+            bundle = train_model_stack(train, profile=profile)
+            trades, summary = backtest_daily(bundle, test, chain, profile=profile, min_confidence=min_confidence)
+            results[f"through_{test_year - 1}_to_{test_year}"] = {
+                "train_rows": len(train),
+                "test_rows": len(test),
+                "long_brier_raw": bundle.metrics.get("long_brier_raw"),
+                "long_brier_cal": bundle.metrics.get("long_brier_cal"),
+                "short_brier_raw": bundle.metrics.get("short_brier_raw"),
+                "short_brier_cal": bundle.metrics.get("short_brier_cal"),
+                "long_auc": bundle.metrics.get("long_auc"),
+                "short_auc": bundle.metrics.get("short_auc"),
+                **summarize_trade_frame(trades),
+                "summary": summary,
+            }
+
+    elif retrain_freq == "quarterly":
+        # Iterate over (year, quarter) pairs starting from the third quarter of the dataset
+        # (we need at least 2 prior quarters of training data to start)
+        dataset["quarter"] = dataset["date"].dt.to_period("Q")
+        quarters = sorted(dataset["quarter"].dropna().unique())
+        # Skip first 4 quarters as pure-train priming, then walk forward
+        for test_q in quarters[4:]:
+            train = dataset[dataset["quarter"] < test_q].copy()
+            test = dataset[dataset["quarter"] == test_q].copy()
+            if len(train) < 30 or test.empty:
+                continue
+            chain = option_chain[
+                option_chain["date"].dt.to_period("Q") == test_q
+            ].copy()
+            bundle = train_model_stack(train, profile=profile)
+            trades, summary = backtest_daily(bundle, test, chain, profile=profile, min_confidence=min_confidence)
+            results[f"q_{test_q}"] = {
+                "train_rows": len(train),
+                "test_rows": len(test),
+                "long_auc": bundle.metrics.get("long_auc"),
+                "short_auc": bundle.metrics.get("short_auc"),
+                "long_brier_cal": bundle.metrics.get("long_brier_cal"),
+                "short_brier_cal": bundle.metrics.get("short_brier_cal"),
+                **summarize_trade_frame(trades),
+                "summary": summary,
+            }
+
+    else:
+        raise ValueError(f"Unknown retrain_freq: {retrain_freq!r}")
+
     return results

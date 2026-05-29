@@ -24,6 +24,12 @@ from intradaynet.features.sentiment_features import (
     SENTIMENT_FEATURE_NAMES,
 )
 from intradaynet.features.market_features import MarketFeatureBuilder
+from intradaynet.feature_contract import (
+    DAILY_FEATURE_NAMES,
+    FEATURE_NAMES,
+    FEATURE_SCHEMA,
+    get_feature_registry,
+)
 from intradaynet.live_news import normalize_historical_sentiment_csv
 from intradaynet.universe import (
     filter_symbols_by_industry,
@@ -198,6 +204,42 @@ class TestSentimentFeatures:
         sector_context = market_builder.get_sector_context(dates, industry="Information Technology")
         assert "sector_index_prev_return" in sector_context
         assert "secondary_sector_confirmation" in sector_context
+
+
+class TestFeatureContract:
+    def test_intraday_feature_count(self):
+        assert FEATURE_SCHEMA.feature_count == len(FEATURE_NAMES)
+        assert FEATURE_SCHEMA.feature_count > 600
+
+    def test_daily_feature_names_are_defined(self):
+        assert len(DAILY_FEATURE_NAMES) > 50
+        assert "prev_day_return" in DAILY_FEATURE_NAMES
+        assert "overnight_gap" in DAILY_FEATURE_NAMES
+        assert "price_momentum_5d" in DAILY_FEATURE_NAMES
+
+    def test_feature_registry_has_both_pipelines(self):
+        registry = get_feature_registry()
+        assert registry.intraday.feature_count > 0
+        assert registry.daily.feature_count > 0
+        assert registry.intraday.feature_count != registry.daily.feature_count
+
+    def test_registry_validate_daily_frame(self):
+        registry = get_feature_registry()
+        columns = ["prev_day_return", "overnight_gap", "volume"]
+        missing = registry.validate_daily_frame(columns)
+        assert len(missing) > 0
+        assert "prev_day_return" not in missing
+
+    def test_registry_validate_daily_frame_all_present(self):
+        registry = get_feature_registry()
+        all_cols = list(registry.daily.feature_names)
+        missing = registry.validate_daily_frame(all_cols)
+        assert missing == []
+
+    def test_registry_validate_intraday_vector(self):
+        registry = get_feature_registry()
+        assert registry.validate_intraday_vector(registry.intraday.feature_count)
+        assert not registry.validate_intraday_vector(100)
 
 
 if __name__ == "__main__":

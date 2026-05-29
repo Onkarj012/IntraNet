@@ -1,5 +1,9 @@
 """
 Profile-based recommendation engine for the live LightGBM backend.
+
+Probability calibration is integrated: if a calibrator is available in the
+model bundle, calibrated probabilities are used for confidence scoring.
+Uncalibrated raw probabilities are demoted to a diagnostic field.
 """
 
 from __future__ import annotations
@@ -217,3 +221,54 @@ def build_recommendation_payload(
 
 def serialize_profile_config() -> dict[str, Any]:
     return {name: asdict(profile) for name, profile in RISK_PROFILES.items()}
+
+
+def calibrate_confidence(
+    raw_confidence: float,
+    raw_probability: float,
+    *,
+    calibrator=None,
+    probability_strength_score: float | None = None,
+) -> dict[str, float]:
+    """
+    Apply calibration to raw model outputs and return calibrated confidence.
+
+    If a calibrator is provided, raw_probability is run through it.
+    Otherwise, a heuristic blend using margin_adjusted_confidence is applied
+    as fallback.
+
+    Returns a dict with:
+        'calibrated_confidence': The calibrated (or heuristic) confidence score.
+        'raw_confidence': Original confidence from model.
+        'raw_probability': Original raw probability.
+        'calibration_applied': True if calibrator was used.
+    """
+    from intradaynet.v7 import margin_adjusted_confidence
+
+    if calibrator is not None:
+        try:
+            from intradaynet.calibrator import apply_calibration
+
+            cal_probs = apply_calibration(
+                calibrator,
+                np.array([[raw_probability, 1.0 - raw_probability]]),
+            )
+            cal_conf = float(cal_probs[0, 0])
+            return {
+                "calibrated_confidence": max(0.0, min(1.0, cal_conf)),
+                "raw_confidence": raw_confidence,
+                "raw_probability": raw_probability,
+                "calibration_applied": True,
+            }
+        except Exception:
+            pass
+
+    if probability_strength_score is None:
+        probability_strength_score = probability_strength(raw_probability)
+    heuristic = margin_adjusted_confidence(raw_probability, 1.0 - raw_probability)
+    return {
+        "calibrated_confidence": max(0.0, min(1.0, heuristic)),
+        "raw_confidence": raw_confidence,
+        "raw_probability": raw_probability,
+        "calibration_applied": False,
+    }

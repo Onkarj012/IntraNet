@@ -64,10 +64,11 @@ def backtest_daily(
     option_chain: pd.DataFrame,
     *,
     profile: str = "balanced",
-    min_confidence: float = 0.55,
+    min_confidence: float = 0.40,
     top_k_per_day: int = 2,
+    apply_regime_filter: bool = True,
 ) -> tuple[pd.DataFrame, dict[str, float]]:
-    scores = score_frame(bundle, features)
+    scores = score_frame(bundle, features, apply_regime_filter=apply_regime_filter)
     rows: list[dict[str, object]] = []
     all_dates = pd.to_datetime(option_chain["date"]).drop_duplicates().sort_values()
     for date, day_scores in scores.groupby("date"):

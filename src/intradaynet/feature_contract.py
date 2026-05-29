@@ -1,10 +1,22 @@
 """
-Shared feature contract for the fast LightGBM trading backend.
+Shared feature contract for ALL IntradayNet model pipelines.
 
 This module is the single source of truth for:
-- flattened feature names
-- flattened feature order
+- flattened intraday feature names (LightGBM backend)
+- daily feature names (open-safe premarket model)
+- feature order, versioning, and schema validation
 - training/inference feature generation
+
+Pipeline mapping:
+    ┌─ LightGBM backend (live) ── uses FEATURE_NAMES (flattened intraday)
+    │   • input: 120-bar × 69 raw features per minute
+    │   • output: ~669 flattened features with rolling window stats
+    │   • used by: model_bundle.py, recommend_live.py, train_live_backend.py
+    │
+    └─ Open-safe premarket model ── uses DAILY_FEATURE_NAMES
+        • input: daily OHLCV + market + sentiment aggregates
+        • output: ~85 daily features
+        • used by: open_safe_daily_features.py, recommend_intraday.py
 
 All training, validation, inference, and backtesting code should go through
 this contract so we never silently drift into a schema mismatch again.
@@ -12,7 +24,7 @@ this contract so we never silently drift into a schema mismatch again.
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Sequence
 
 import numpy as np
@@ -23,8 +35,104 @@ from intradaynet.features.sentiment_features import SENTIMENT_FEATURE_NAMES
 
 
 FEATURE_SCHEMA_VERSION = "live_v2"
+DAILY_FEATURE_SCHEMA_VERSION = "daily_v2"
 FLAT_WINDOWS = (5, 15, 30, 60, 120)
 FLAT_STATS = ("mean", "std", "min", "max")
+
+# ── Daily-level feature names (open-safe premarket model) ──
+
+DAILY_PRICE_ACTION_FEATURES = [
+    "prev_day_return",
+    "prev_day_volatility",
+    "prev_day_range",
+    "prev_day_atr",
+    "overnight_gap",
+    "prev_gap_size",
+    "prev_gap_direction",
+    "price_momentum_5d",
+    "price_momentum_10d",
+    "price_momentum_20d",
+    "close_vs_day_high",
+    "close_vs_day_low",
+    "range_expansion_5d",
+    "close_vs_vwap",
+    "vwap",
+    "sector_relative_strength",
+    "stock_vs_sector_1d",
+    "stock_vs_sector_5d",
+    "breadth_momentum_confirmation",
+    "volatility_normalized_gap",
+    "volatility_normalized_momentum_5d",
+]
+
+DAILY_VOLUME_FEATURES = [
+    "prev_volume",
+    "volume",
+    "vol_momentum",
+    "volume_zscore",
+]
+
+DAILY_FIB_FEATURES = [
+    "swing_range_5d",
+    "swing_range_20d",
+    "prior_swing_position_5d",
+    "prior_swing_position_20d",
+]
+for lookback in ("5d", "20d"):
+    for fib_ratio in ("236", "382", "500", "618", "786"):
+        DAILY_FIB_FEATURES.append(f"fib_{fib_ratio}_dist_{lookback}")
+    DAILY_FIB_FEATURES.append(f"fib_confluence_{lookback}")
+    DAILY_FIB_FEATURES.append(f"distance_to_nearest_fib_{lookback}")
+
+DAILY_MARKET_FEATURES = [
+    "crude_oil_return",
+    "crude_oil_5d_change",
+    "gold_return",
+    "usdinr_change",
+    "us_10y_yield_change",
+    "dxy_change",
+    "asia_sentiment",
+    "dow_overnight_return",
+    "nasdaq_overnight_return",
+    "global_volatility_regime",
+    "india_vix_percentile",
+    "nifty_5d_return",
+    "sp500_overnight_return",
+    "commodity_pressure",
+    "dollar_yield_pressure",
+    "risk_on_signal",
+]
+
+DAILY_INDIA_FEATURES = [
+    "nifty_intraday_return",
+    "sector_intraday_return",
+    "vix_level",
+    "vix_change",
+    "market_breadth",
+    "global_cue",
+    "sector_index_prev_return",
+    "sector_index_5d_return",
+    "sector_index_volatility",
+    "industry_relative_strength_rank",
+    "sector_breadth_proxy",
+    "secondary_sector_confirmation",
+]
+
+DAILY_META_FEATURES = [
+    "feature_version_code",
+]
+
+_DAILY_FEATURE_NAMES_RAW: list[str] = (
+    DAILY_PRICE_ACTION_FEATURES
+    + DAILY_VOLUME_FEATURES
+    + DAILY_FIB_FEATURES
+    + DAILY_MARKET_FEATURES
+    + DAILY_INDIA_FEATURES
+    + list(SENTIMENT_FEATURE_NAMES)
+    + DAILY_META_FEATURES
+)
+
+DAILY_FEATURE_NAMES: list[str] = list(dict.fromkeys(_DAILY_FEATURE_NAMES_RAW))
 
 
 @dataclass(frozen=True)
@@ -35,6 +143,40 @@ class FeatureSchema:
     @property
     def feature_count(self) -> int:
         return len(self.feature_names)
+
+
+@dataclass
+class FeatureRegistry:
+    """
+    Canonical registry of all feature names across both pipelines.
+
+    Usage:
+        registry = get_feature_registry()
+        assert model_input.shape[1] == registry.intraday.feature_count
+    """
+    intraday: FeatureSchema = field(default_factory=lambda: FeatureSchema(
+        version=FEATURE_SCHEMA_VERSION,
+        feature_names=tuple(FEATURE_NAMES),
+    ))
+    daily: FeatureSchema = field(default_factory=lambda: FeatureSchema(
+        version=DAILY_FEATURE_SCHEMA_VERSION,
+        feature_names=tuple(DAILY_FEATURE_NAMES),
+    ))
+
+    def validate_daily_frame(self, columns: list[str]) -> list[str]:
+        """Check daily DataFrame columns against the contract. Returns missing features."""
+        expected = set(self.daily.feature_names)
+        actual = set(columns)
+        missing = expected - actual
+        return sorted(missing)
+
+    def validate_intraday_vector(self, length: int) -> bool:
+        """Check that a flat feature vector has the expected length."""
+        return length == self.intraday.feature_count
+
+
+def get_feature_registry() -> FeatureRegistry:
+    return FeatureRegistry()
 
 
 def build_feature_names() -> list[str]:
@@ -81,6 +223,8 @@ def flatten_intraday_window(
 ) -> np.ndarray:
     """
     Flatten a single (L, F) window into the shared backend feature vector.
+
+    Used by: LightGBM backend (live recommendation pipeline)
     """
     if window.ndim != 2:
         raise ValueError(f"Expected 2D window, got shape {window.shape}")
@@ -145,6 +289,8 @@ def flatten_intraday_batch(
 ) -> np.ndarray:
     """
     Flatten a batch of windows using the exact same feature order as inference.
+
+    Used by: LightGBM backend (live recommendation pipeline)
     """
     if windows.ndim != 3:
         raise ValueError(f"Expected 3D windows array, got {windows.shape}")

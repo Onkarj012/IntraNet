@@ -157,7 +157,7 @@ def parse_args():
     parser = argparse.ArgumentParser(description="Daily health check for IntradayNet")
     parser.add_argument("--model", default="runs/lgbm_v2",
                         help="Path to model directory")
-    parser.add_argument("--data", default="nifty500",
+    parser.add_argument("--data", default="data/nifty500",
                         help="Path to stock data directory")
     parser.add_argument("--prebatched", default="prebatched_v2/lgbm_dataset.npz",
                         help="Path to prebatched data")

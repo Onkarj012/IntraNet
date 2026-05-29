@@ -2,8 +2,10 @@
 """Train the V7 open-safe intraday recommendation model."""
 
 import argparse
+import json
 import pickle
 import sys
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Dict
 
@@ -209,7 +211,7 @@ def main():
         
         # Load stocks
         symbols = get_universe(args.universe)
-        data_dir = Path("nifty500")
+        data_dir = Path("data/nifty500")
         
         console.print(f"\n[bold]Processing {len(symbols)} stocks (2021-2024)...[/bold]")
         
@@ -336,33 +338,91 @@ def main():
         console.print()
         console.print(split_table)
         
-        # Save
+        # Save model + training config
         output_path = Path(args.output)
         output_path.parent.mkdir(parents=True, exist_ok=True)
-        
+        trained_at = datetime.now(timezone.utc).isoformat()
+
+        model_checkpoint = {
+            "models": models,
+            "features": feature_cols,
+            "metrics": metrics,
+            "target_pct": args.target_pct,
+            "target_version": TARGET_VERSION,
+            "feature_version": FEATURE_VERSION,
+            "calibration_version": CALIBRATION_VERSION,
+            "n_samples": len(X),
+            "n_symbols": X["symbol"].nunique(),
+            "split_info": split_info,
+            "label_distribution": {
+                "long": float(y["long_target"].mean()),
+                "short": float(y["short_target"].mean()),
+                "no_trade": float(y["no_trade_target"].mean()),
+            },
+            "training_window": {
+                "start": str(X.index.min().date()),
+                "end": str(X.index.max().date()),
+            },
+            "log_path": str(run_logger.log_path),
+            "trained_at": trained_at,
+            "universe": args.universe,
+        }
+
+        training_config = {
+            "trained_at": trained_at,
+            "target_version": TARGET_VERSION,
+            "feature_version": FEATURE_VERSION,
+            "calibration_version": CALIBRATION_VERSION,
+            "model_hyperparameters": {
+                "n_estimators": 1000,
+                "max_depth": 5,
+                "num_leaves": 31,
+                "learning_rate": 0.05,
+                "min_child_samples": 50,
+                "subsample": 0.8,
+                "colsample_bytree": 0.8,
+                "early_stopping_rounds": 50,
+            },
+            "universe": args.universe,
+            "target_pct": args.target_pct,
+            "stock_summary": {
+                "processed": processed,
+                "skipped": skipped,
+                "failed": failed,
+                "total_symbols_scanned": len(symbols),
+            },
+            "symbols_processed": [row[0] for row in per_symbol_rows if row[2] == "ok"],
+            "symbols_skipped": {row[0]: row[1] for row in per_symbol_rows if row[2] != "ok"},
+            "feature_families": {
+                "price_action": 21,
+                "volume": 4,
+                "fibonacci": 14,
+                "market": 16,
+                "india": 12,
+                "sentiment": 50,
+                "meta": 1,
+                "total": len(feature_cols),
+            },
+            "data_window": {
+                "start": str(X.index.min().date()),
+                "end": str(X.index.max().date()),
+            },
+            "split_info": split_info,
+            "label_distribution": {
+                "long": float(y["long_target"].mean()),
+                "short": float(y["short_target"].mean()),
+                "no_trade": float(y["no_trade_target"].mean()),
+            },
+            "validation_metrics": {k: float(v) for k, v in metrics.items()},
+            "log_path": str(run_logger.log_path),
+        }
+
         with open(output_path, "wb") as f:
-            pickle.dump({
-                "models": models,
-                "features": feature_cols,
-                "metrics": metrics,
-                "target_pct": args.target_pct,
-                "target_version": TARGET_VERSION,
-                "feature_version": FEATURE_VERSION,
-                "calibration_version": CALIBRATION_VERSION,
-                "n_samples": len(X),
-                "n_symbols": X["symbol"].nunique(),
-                "split_info": split_info,
-                "label_distribution": {
-                    "long": float(y["long_target"].mean()),
-                    "short": float(y["short_target"].mean()),
-                    "no_trade": float(y["no_trade_target"].mean()),
-                },
-                "training_window": {
-                    "start": str(X.index.min().date()),
-                    "end": str(X.index.max().date()),
-                },
-                "log_path": str(run_logger.log_path),
-            }, f)
+            pickle.dump(model_checkpoint, f)
+
+        config_path = output_path.with_suffix(".training_config.json")
+        with open(config_path, "w") as f:
+            json.dump(training_config, f, indent=2, default=str)
 
         metrics_table = Table(title="Validation Metrics")
         metrics_table.add_column("Metric", style="cyan")
