@@ -5,65 +5,50 @@
 # ── Python ────────────────────────────────────────────────────────────────────
 __pycache__/
 *.py[cod]
-*$py.class
 *.so
-*.egg
 *.egg-info/
-*.whl
 dist/
 build/
-eggs/
-
-# Virtual environments
 .venv/
-venv/
-ENV/
 .uv_cache/
 
-# ── Data (large, downloadable/regeneratable) ─────────────────────────────────
-# Nifty 500 minute bars (~20 GB)
+# ── Large data (downloadable/regeneratable) ───────────────────────────────────
 data/nifty500/
 data/nifty_intraday/
 data/banknifty_intraday/
 data/indices_minute/
-
-# F&O raw downloads and parquet lake (~1 GB)
+data/option_data/
 data/raw/
 data/parquet/
 data/normalized/
+data/sentiment/
+data/yfinance_daily/
+data/us/
+data/optinet/
 data/metadata/
 
-# Sentiment CSVs (regeneratable)
-data/sentiment/
-
-# yfinance daily CSVs
-data/yfinance_daily/
-
-# US stock data
-data/us/
-
-# Option chain data
-data/option_data/
-
-# OptiNet intermediate data
-data/optinet/
-
-# ── Data we DO track ─────────────────────────────────────────────────────────
-# data/prices/ — 42 EOD reference CSVs (13 MB)
-# data/indices/ — nifty_daily.csv, banknifty_daily.csv
+# ── Small data we DO track ────────────────────────────────────────────────────
+# data/prices/    — 42 EOD reference CSVs
+# data/indices/   — nifty_daily.csv, banknifty_daily.csv
 # data/README.md
 
-# ── Models (large binaries) ──────────────────────────────────────────────────
+# ── Models ────────────────────────────────────────────────────────────────────
 models/
+*.pkl
+*.pt
+*.pth
+*.lgb
+*.onnx
+*.bin
 
-# ── Cache & Generated Output ─────────────────────────────────────────────────
+# ── Cache & generated output ──────────────────────────────────────────────────
 cache/
 market_data_cache/
 graphify-out/
 outputs/
 nifty500/
 
-# ── Results & Recommendations (generated) ────────────────────────────────────
+# ── Results & recommendations ─────────────────────────────────────────────────
 results/
 recommendations/
 backtest_results/
@@ -72,45 +57,30 @@ backtest_results/
 logs/
 *.log
 
-# ── Ledger (append-only paper trading data) ──────────────────────────────────
+# ── Ledger ────────────────────────────────────────────────────────────────────
 ledger/
 
-# ── Testing ──────────────────────────────────────────────────────────────────
+# ── Testing ───────────────────────────────────────────────────────────────────
 .pytest_cache/
 .coverage
 htmlcov/
-.tox/
-.nox/
 
-# ── Jupyter ──────────────────────────────────────────────────────────────────
-.ipynb_checkpoints/
-*.ipynb
-
-# ── IDE & Editor ─────────────────────────────────────────────────────────────
+# ── IDE & OS ──────────────────────────────────────────────────────────────────
 .vscode/
 .idea/
 .codex/
-*.swp
-*.swo
-*~
-
-# ── OS ───────────────────────────────────────────────────────────────────────
 .DS_Store
 ._*
-Thumbs.db
-Desktop.ini
+*.swp
+*~
 
-# ── Secrets ──────────────────────────────────────────────────────────────────
+# ── Secrets ───────────────────────────────────────────────────────────────────
 .env
 .env.*
 *.pem
 *.key
-credentials.json
-secrets.yaml
 
-# ── Misc ─────────────────────────────────────────────────────────────────────
+# ── Misc ──────────────────────────────────────────────────────────────────────
 *.tmp
-*.temp
 *.bak
-*.backup
 flags/
