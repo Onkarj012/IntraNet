@@ -63,7 +63,7 @@ class KiteClient:
     """Thin wrapper around KiteConnect with headless login."""
 
     def __init__(self, api_key: str, api_secret: str,
-                 user_id: str, password: str, totp_secret: str):
+                 user_id: str, password: str, totp_secret: str = ""):
         self.api_key = api_key
         self.api_secret = api_secret
         self.user_id = user_id
@@ -80,60 +80,71 @@ class KiteClient:
             api_secret=os.environ["KITE_API_SECRET"],
             user_id=os.environ["KITE_USER_ID"],
             password=os.environ["KITE_PASSWORD"],
-            totp_secret=os.environ["KITE_TOTP_SECRET"],
+            totp_secret=os.environ.get("KITE_TOTP_SECRET", ""),
         )
 
     # ── Login ──────────────────────────────────────────────────────────────
 
     def login(self) -> str:
-        """Headless TOTP login. Returns access_token and saves to .env."""
+        """Headless login with one-shot local server to catch redirect.
+        Returns access_token and saves to .env."""
         # Check if existing token is still valid
         existing = os.environ.get("KITE_ACCESS_TOKEN")
         if existing:
             try:
                 self.kite.set_access_token(existing)
-                self.kite.profile()  # will raise if token expired
+                self.kite.profile()
                 print("  Kite: existing access_token still valid")
                 return existing
             except Exception:
                 pass
 
-        session = requests.Session()
-        session.headers.update({"X-Kite-Version": "3"})
+        import threading
+        import urllib.parse
+        from http.server import BaseHTTPRequestHandler, HTTPServer
 
-        # Step 1: password login
-        r = session.post(_LOGIN_URL, data={
-            "user_id": self.user_id,
-            "password": self.password,
-        })
-        r.raise_for_status()
-        data = r.json()["data"]
-        request_id = data["request_id"]
+        request_token_holder: list[str] = []
 
-        # Step 2: TOTP 2FA
-        totp = pyotp.TOTP(self.totp_secret).now()
-        r = session.post(_TWOFA_URL, data={
-            "user_id": self.user_id,
-            "request_id": request_id,
-            "twofa_value": totp,
-            "twofa_type": "totp",
-        })
-        r.raise_for_status()
+        class _Handler(BaseHTTPRequestHandler):
+            def do_GET(self):
+                parsed = urllib.parse.urlparse(self.path)
+                params = urllib.parse.parse_qs(parsed.query)
+                token = params.get("request_token", [None])[0]
+                if token:
+                    request_token_holder.append(token)
+                self.send_response(200)
+                self.end_headers()
+                self.wfile.write(b"<h2>Login successful. You can close this tab.</h2>")
 
-        # Step 3: extract request_token from redirect URL
+            def log_message(self, *args):
+                pass  # suppress server logs
+
+        server = HTTPServer(("127.0.0.1", 5000), _Handler)
+        thread = threading.Thread(target=server.handle_request)
+        thread.daemon = True
+        thread.start()
+
+        # Open the Kite login URL in the browser
+        import webbrowser
         login_url = self.kite.login_url()
-        r = session.get(login_url, allow_redirects=False)
-        redirect = r.headers.get("Location", "")
-        m = re.search(r"request_token=([^&]+)", redirect)
-        if not m:
-            # Follow redirect and parse from final URL
-            r2 = session.get(login_url, allow_redirects=True)
-            m = re.search(r"request_token=([^&]+)", r2.url)
-        if not m:
-            raise RuntimeError(f"Could not extract request_token from: {redirect}")
-        request_token = m.group(1)
+        print(f"\n  Opening Kite login in browser...")
+        print(f"  URL: {login_url}")
+        print(f"  Waiting for redirect to http://127.0.0.1:5000/callback ...")
+        webbrowser.open(login_url)
 
-        # Step 4: generate session
+        # Wait up to 120 seconds for the user to log in
+        thread.join(timeout=120)
+        server.server_close()
+
+        if not request_token_holder:
+            raise RuntimeError(
+                "Login timed out or redirect not received.\n"
+                "Make sure your Kite app redirect URL is set to: http://127.0.0.1:5000/callback"
+            )
+
+        request_token = request_token_holder[0]
+        print(f"  Got request_token: {request_token[:8]}…")
+
         sess = self.kite.generate_session(request_token, api_secret=self.api_secret)
         access_token = sess["access_token"]
         self.kite.set_access_token(access_token)
