@@ -7,7 +7,7 @@ import pandas as pd
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
-from intradaynet.v7_modes import compute_post_open_adjustment, extract_post_open_session
+from equity.v7_modes import compute_post_open_adjustment, extract_post_open_session
 
 
 def test_extract_post_open_session_keeps_bars_through_cutoff():

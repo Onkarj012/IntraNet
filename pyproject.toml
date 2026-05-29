@@ -1,7 +1,7 @@
 [project]
-name = "intradaynet"
-version = "0.1.0"
-description = "Dedicated intraday prediction model for Indian equities using TCN + Attention"
+name = "nifty-trader"
+version = "0.2.0"
+description = "Intraday NIFTY futures trading system — ML signal engine, live execution, paper trading"
 requires-python = ">=3.10"
 dependencies = [
     "torch>=2.0",
@@ -13,10 +13,13 @@ dependencies = [
     "lightgbm>=4.0",
     "rich>=13.0",
     "yfinance>=0.2.54",
+    "kiteconnect==5.0.1",
+    "pyotp==2.9.0",
+    "requests==2.32.3",
 ]
 
 [project.scripts]
-intradaynet = "intradaynet.cli:main"
+nifty-trader = "equity.cli:main"
 
 [project.optional-dependencies]
 dev = [
@@ -24,7 +27,7 @@ dev = [
 ]
 
 [tool.hatch.build.targets.wheel]
-packages = ["src/intradaynet", "src/optinet"]
+packages = ["src/engine", "src/broker", "src/equity", "src/index_options"]
 
 [build-system]
 requires = ["hatchling"]

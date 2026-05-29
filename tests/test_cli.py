@@ -8,7 +8,7 @@ from rich.console import Console
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
-from intradaynet import cli
+from equity import cli
 
 
 def make_recording_console() -> Console:

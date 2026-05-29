@@ -12,23 +12,23 @@ import numpy as np
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
 
-from intradaynet.feature_contract import (
+from equity.feature_contract import (
     FEATURE_NAMES,
     FEATURE_SCHEMA,
     flatten_intraday_batch,
     flatten_intraday_window,
 )
-from intradaynet.features.per_bar_features import PER_BAR_FEATURE_NAMES
-from intradaynet.features.sentiment_features import SENTIMENT_FEATURE_NAMES
-from intradaynet.features.session_features import SESSION_FEATURE_NAMES
-from intradaynet.model_bundle import (
+from equity.features.per_bar_features import PER_BAR_FEATURE_NAMES
+from equity.features.sentiment_features import SENTIMENT_FEATURE_NAMES
+from equity.features.session_features import SESSION_FEATURE_NAMES
+from equity.model_bundle import (
     HorizonBundleMetadata,
     ModelBundleManifest,
     load_manifest,
     save_manifest,
     validate_feature_contract,
 )
-from intradaynet.recommendation import build_recommendation_payload
+from equity.recommendation import build_recommendation_payload
 
 
 def test_shared_feature_contract_shape():

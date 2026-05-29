@@ -4,15 +4,20 @@ from pathlib import Path
 import sys
 
 import pandas as pd
+import numpy as np
 from dataclasses import dataclass
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
-from intradaynet.v7 import (
+from equity.v7 import (
+    compute_daily_targets_from_minute,
     compute_directional_targets,
+    compute_horizon_targets,
+    compute_horizon_targets_batched,
     compute_trade_levels,
     evaluate_readiness,
     executable_edge_from_prediction,
+    extract_sessions,
     feature_staleness_bdays,
     margin_adjusted_confidence,
     select_candidates,
@@ -136,3 +141,129 @@ def test_readiness_post_open_needs_runtime_and_mode_parity():
     )
 
     assert readiness.status == "SMALL_LIVE"
+
+
+def test_horizon_targets_point_in_time_no_lookahead():
+    """Horizon targets at bar t must only use data from [t, t+H], not full session."""
+    minutes = pd.date_range("2025-01-01 09:15", periods=30, freq="1min")
+    prices = [100.0 + i * 0.1 for i in range(30)]
+    prices[25] = 105.0
+    minute_df = pd.DataFrame(
+        {
+            "open": prices,
+            "high": [p + 0.2 for p in prices],
+            "low": [p - 0.2 for p in prices],
+            "close": prices,
+        },
+        index=minutes,
+    )
+
+    targets = compute_horizon_targets(minute_df, horizon_bars=5, target_pct=0.02)
+
+    assert len(targets) == 30
+    assert set(targets["trade_label"].unique()).issubset({"LONG", "SHORT", "NO_TRADE"})
+    label_counts = targets["trade_label"].value_counts().to_dict()
+    assert label_counts.get("LONG", 0) + label_counts.get("SHORT", 0) > 0
+
+    final_5_close = minute_df["close"].iloc[-5:].values
+    final_5_future_high = targets["long_executable_move"].iloc[-5:].values + 0.0018
+    assert all(f <= 0.02 for f in final_5_future_high)
+
+
+def test_horizon_targets_batched_produces_all_horizons():
+    """Batched horizon target function produces correct keys."""
+    minutes = pd.date_range("2025-01-01 09:15", periods=60, freq="1min")
+    prices = 100.0 + np.cumsum(np.random.default_rng(42).normal(0, 0.05, 60))
+    prices = np.maximum(prices, 80.0)
+    minute_df = pd.DataFrame(
+        {
+            "open": prices,
+            "high": prices + 0.3,
+            "low": prices - 0.3,
+            "close": prices,
+        },
+        index=minutes,
+    )
+
+    results = compute_horizon_targets_batched(
+        minute_df,
+        horizons={"H15": 15, "H30": 30},
+    )
+
+    assert set(results.keys()) == {"H15", "H30"}
+    for name, df in results.items():
+        assert len(df) == 60
+        assert "trade_label" in df.columns
+        assert "trade_side_code" in df.columns
+
+
+def test_horizon_targets_labels_are_mutually_exclusive():
+    """Each bar gets exactly one of LONG, SHORT, or NO_TRADE."""
+    minutes = pd.date_range("2025-01-01 09:15", periods=50, freq="1min")
+    rng = np.random.default_rng(42)
+    prices = 100.0 + rng.normal(0, 0.1, 50).cumsum()
+    prices = np.maximum(prices, 80.0)
+    minute_df = pd.DataFrame(
+        {
+            "open": prices,
+            "high": prices + abs(rng.normal(0.2, 0.05, 50)),
+            "low": prices - abs(rng.normal(0.2, 0.05, 50)),
+            "close": prices,
+        },
+        index=minutes,
+    )
+
+    targets = compute_horizon_targets(minute_df, horizon_bars=10)
+
+    assert ((targets["long_target"] + targets["short_target"] + targets["no_trade_target"]) == 1).all()
+    for label in targets["trade_label"]:
+        assert label in ("LONG", "SHORT", "NO_TRADE")
+
+
+def test_extract_sessions_splits_multiday():
+    """extract_sessions should split a multi-day DF into per-day sessions."""
+    minutes = pd.date_range("2025-01-01 09:15", periods=30, freq="1min").union(
+        pd.date_range("2025-01-02 09:15", periods=30, freq="1min")
+    )
+    df = pd.DataFrame(
+        {
+            "open": 100.0,
+            "high": 101.0,
+            "low": 99.0,
+            "close": 100.5,
+            "volume": 1000,
+        },
+        index=minutes,
+    )
+
+    sessions = extract_sessions(df)
+    assert len(sessions) == 2
+    assert sessions[0].index[0].date() == pd.Timestamp("2025-01-01").date()
+    assert sessions[1].index[0].date() == pd.Timestamp("2025-01-02").date()
+
+
+def test_compute_daily_targets_from_minute():
+    """Daily targets derived from minute data should match the shape of daily data."""
+    rng = np.random.default_rng(42)
+    minutes = pd.date_range("2025-01-01 09:15", periods=375, freq="1min").union(
+        pd.date_range("2025-01-02 09:15", periods=375, freq="1min")
+    )
+    prices = 100.0 + rng.normal(0, 0.15, len(minutes)).cumsum()
+    prices = np.maximum(prices, 80.0)
+    df = pd.DataFrame(
+        {
+            "open": prices,
+            "high": prices + 0.5,
+            "low": prices - 0.5,
+            "close": prices,
+            "volume": 1000,
+        },
+        index=minutes,
+    )
+
+    daily = compute_daily_targets_from_minute(df)
+
+    assert len(daily) == 2
+    assert "trade_label" in daily.columns
+    assert "long_executable_move" in daily.columns
+    assert set(daily["trade_label"].unique()).issubset({"LONG", "SHORT", "NO_TRADE"})
