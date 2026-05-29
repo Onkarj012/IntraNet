@@ -9,7 +9,7 @@ from dataclasses import dataclass
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
-from intradaynet.v7 import (
+from equity.v7 import (
     compute_daily_targets_from_minute,
     compute_directional_targets,
     compute_horizon_targets,

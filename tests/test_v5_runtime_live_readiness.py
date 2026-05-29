@@ -8,10 +8,10 @@ import pandas as pd
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
 
-from optinet.v5_runtime.data_quality import check_minute_session_quality
-from optinet.v5_runtime.orders import DryRunOrderClient, OrderTicket, UpstoxOrderClient
-from optinet.v5_runtime.reconcile import reconcile_order_tickets
-from optinet.v5_runtime.risk import BrokerState, RiskLimits, evaluate_ticket_risk, order_count_for_date
+from engine.data_quality import check_minute_session_quality
+from engine.orders import DryRunOrderClient, OrderTicket, UpstoxOrderClient
+from engine.reconcile import reconcile_order_tickets
+from engine.risk import BrokerState, RiskLimits, evaluate_ticket_risk, order_count_for_date
 
 
 def _ticket(ticket_id: str = "A-abc", variant: str = "A") -> OrderTicket:

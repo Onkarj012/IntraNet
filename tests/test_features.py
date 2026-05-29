@@ -11,27 +11,27 @@ import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
 
-from intradaynet.features.per_bar_features import (
+from equity.features.per_bar_features import (
     compute_per_bar_features,
     PER_BAR_FEATURE_NAMES,
 )
-from intradaynet.features.session_features import (
+from equity.features.session_features import (
     compute_session_features,
     SESSION_FEATURE_NAMES,
 )
-from intradaynet.features.sentiment_features import (
+from equity.features.sentiment_features import (
     SentimentFeatureBuilder,
     SENTIMENT_FEATURE_NAMES,
 )
-from intradaynet.features.market_features import MarketFeatureBuilder
-from intradaynet.feature_contract import (
+from equity.features.market_features import MarketFeatureBuilder
+from equity.feature_contract import (
     DAILY_FEATURE_NAMES,
     FEATURE_NAMES,
     FEATURE_SCHEMA,
     get_feature_registry,
 )
-from intradaynet.live_news import normalize_historical_sentiment_csv
-from intradaynet.universe import (
+from equity.live_news import normalize_historical_sentiment_csv
+from equity.universe import (
     filter_symbols_by_industry,
     get_symbol_to_industry_map,
     get_universe_metadata,

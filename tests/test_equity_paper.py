@@ -8,7 +8,7 @@ import pandas as pd
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
-from intradaynet.equity_paper import create_equity_paper_ledger, reconcile_equity_paper_ledger
+from equity.equity_paper import create_equity_paper_ledger, reconcile_equity_paper_ledger
 
 
 def _recommendations_payload(status: str = "PAPER_ONLY") -> dict:

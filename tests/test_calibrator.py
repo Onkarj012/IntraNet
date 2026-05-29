@@ -10,7 +10,7 @@ import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
 
-from intradaynet.calibrator import (
+from equity.calibrator import (
     calibrate_direction_probs,
     calibration_report,
     compute_calibration_curve,
