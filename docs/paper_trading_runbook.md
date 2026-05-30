@@ -379,6 +379,6 @@ fix the upstream pipeline before running the paper trader.
 
 - Halt triggered → stop, read the halt reason in
   `results/router_v0/PAPER_TRADING_HALTED`, investigate, decide.
-- Unclear behavior → re-run `scripts/tier1_validation.py` against current
+- Unclear behavior → re-run `scripts/research/tier1_validate.py` against current
   data; if any Tier-1 check now fails, the engine has degraded and
   needs investigation.

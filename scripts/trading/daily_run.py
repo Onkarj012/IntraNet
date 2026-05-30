@@ -56,8 +56,9 @@ def main() -> int:
         return rc
 
     # 2. Paper trading ops (Variant A + C + status + halt checks)
+    # paper_ops.py already passes --write-halt to paper_status.py internally
     rc = run("Step 2: Paper trading ops",
-             [PYTHON, "scripts/trading/paper_ops.py", "--auto", "--write-halt"])
+             [PYTHON, "scripts/trading/paper_ops.py", "--auto"])
     return rc
 
 

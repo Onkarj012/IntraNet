@@ -248,8 +248,6 @@ def run_one_day(target_date: pd.Timestamp,
     # Compute gap from first eligible bar
     gap_pct = 0.0
     if not candidates.empty:
-        first_bar = bars_for_sim.iloc[0]
-        prev_close = bars_for_sim["fut_close"].iloc[0]  # proxy: use open as gap ref
         gap_pct = float(candidates.iloc[0].get("gap_pct", 0.0))
     vix_spike_day = (prior_vix >= VIX_SPIKE_THRESHOLD and gap_pct <= VIX_GAP_THRESHOLD)
     if vix_spike_day:

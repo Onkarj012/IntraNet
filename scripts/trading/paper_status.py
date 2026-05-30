@@ -365,7 +365,7 @@ def main() -> int:
 
     if not ledger_path.exists():
         print(f"\n  ledger not found: {ledger_path}")
-        print("  (run scripts/paper_trade_daily.py --auto)")
+        print("  (run scripts/trading/paper_trade.py --auto)")
         return 1
 
     df = pd.read_csv(ledger_path)
