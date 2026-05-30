@@ -188,7 +188,7 @@ forward-walk validity that earned us the right to paper trade.
 
 ## Variant C — parallel macro-regime variant
 
-In addition to Variant A (current live), `scripts/paper_trade_variant_c.py`
+In addition to Variant A (current live), `scripts/trading/paper_trade_variant_c.py`
 runs Variant C on the same days. Variant C adds three extra filters on top
 of Variant A's hard filters:
 
@@ -208,7 +208,7 @@ In-sample on the 19-month forward walk:
 
 Daily run:
 ```bash
-.venv/bin/python scripts/paper_trade_variant_c.py --auto
+.venv/bin/python scripts/trading/paper_trade_variant_c.py --auto
 ```
 
 The runner writes to the same `paper_trading_ledger.csv` but with
