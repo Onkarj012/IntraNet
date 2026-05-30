@@ -57,6 +57,13 @@ HIGH_CONF_PCT = 0.95
 SKIP_REGIMES  = {"compression"}
 MAX_TRADES    = 3
 DAILY_HALT    = -15_000.0
+# Phase-1: tighter intraday cumulative halt
+INTRADAY_CUM_HALT   = -9_000.0
+# Phase-1: skip day when prior VIX >= threshold AND gap <= -0.5%
+VIX_SPIKE_THRESHOLD = 20.0
+VIX_GAP_THRESHOLD   = -0.005
+
+VIX_PATH = PROJECT_ROOT / "data/nifty_intraday/INDIA VIX_day.csv"
 
 OI_FILL = ["oi_chg_1m", "oi_chg_5m", "oi_chg_30m", "vol_oi_ratio", "vol_zscore"]
 
@@ -97,6 +104,25 @@ def _send_telegram(msg: str, token: str, chat_id: str) -> None:
         )
     except Exception as e:
         print(f"  Telegram error: {e}")
+
+
+def _load_prior_vix(target_date: date) -> float:
+    """Return prior-day VIX close. Returns 0.0 if unavailable."""
+    if not VIX_PATH.exists():
+        return 0.0
+    try:
+        vix = pd.read_csv(VIX_PATH)
+        vix.columns = [c.strip().lower() for c in vix.columns]
+        date_col = next((c for c in vix.columns if "date" in c), None)
+        close_col = next((c for c in vix.columns if c in ("close", "vix close", "vix_close")), None)
+        if date_col is None or close_col is None:
+            return 0.0
+        vix[date_col] = pd.to_datetime(vix[date_col])
+        vix = vix.sort_values(date_col).reset_index(drop=True)
+        prior = vix[vix[date_col].dt.date < target_date]
+        return float(prior[close_col].iloc[-1]) if not prior.empty else 0.0
+    except Exception:
+        return 0.0
 
 
 # ── Replay mode (historical day) ──────────────────────────────────────────────
@@ -148,6 +174,10 @@ def run_replay(target_date: date, model: lgb.Booster,
     day_scores: list[float] = []
     n_trades = 0
     daily_pnl = 0.0
+    intraday_cum = 0.0   # Phase-1
+
+    # Phase-1: VIX spike filter
+    prior_vix = _load_prior_vix(target_date)
 
     for _, row in feats.iterrows():
         ts = row["datetime"]
@@ -162,6 +192,16 @@ def run_replay(target_date: date, model: lgb.Booster,
             continue
         if n_trades >= MAX_TRADES or daily_pnl <= DAILY_HALT:
             continue
+        # Phase-1: intraday cumulative halt
+        if intraday_cum <= INTRADAY_CUM_HALT:
+            print(f"  Phase-1 intraday halt at {t}: cum_pnl=₹{intraday_cum:+,.0f}")
+            break
+        # Phase-1: VIX spike filter (check once using gap from first bar)
+        if prior_vix >= VIX_SPIKE_THRESHOLD:
+            gap = float(row.get("gap_pct", 0.0))
+            if gap <= VIX_GAP_THRESHOLD:
+                print(f"  Phase-1 VIX spike filter: prior_vix={prior_vix:.1f} gap={gap*100:.2f}% — no trades today")
+                break
 
         feat_row = pd.DataFrame([{f: row.get(f, 0.0) for f in FUTURES_FEATURES}])
         score = float(model.predict(feat_row)[0])
@@ -199,6 +239,7 @@ def run_replay(target_date: date, model: lgb.Booster,
             net = max((exit_px - entry_px) * LOT * size_mult - COSTS_INR * size_mult,
                       -3000.0)
             daily_pnl += net
+            intraday_cum += net
             print(f"  → simulated exit: ₹{net:+,.0f}  (day total: ₹{daily_pnl:+,.0f})")
 
     if n_trades == 0:
@@ -229,6 +270,9 @@ def run_live(kite: KiteClient, model: lgb.Booster,
     day_scores: list[float] = []
     n_trades = 0
     daily_pnl = 0.0
+    intraday_cum = 0.0   # Phase-1
+    prior_vix = _load_prior_vix(today)
+    vix_spike_day = False   # set True once gap is known (first candle)
 
     log_path = LOG_DIR / f"live_{today.strftime('%Y%m%d')}.log"
     LOG_DIR.mkdir(exist_ok=True)
@@ -282,7 +326,7 @@ def run_live(kite: KiteClient, model: lgb.Booster,
         _process_candle(minute, candle)
 
     def _process_candle(ts: datetime, candle: dict) -> None:
-        nonlocal n_trades, daily_pnl
+        nonlocal n_trades, daily_pnl, intraday_cum, vix_spike_day
         t = ts.time()
         if t < dtime(9, 15) or t > dtime(15, 30):
             return
@@ -304,6 +348,15 @@ def run_live(kite: KiteClient, model: lgb.Booster,
         feats = add_regime(feats)
         row = feats.iloc[-1]
 
+        # Phase-1: VIX spike filter — evaluate once on first candle
+        if not vix_spike_day and prior_vix >= VIX_SPIKE_THRESHOLD:
+            gap = float(row.get("gap_pct", 0.0))
+            if gap <= VIX_GAP_THRESHOLD:
+                vix_spike_day = True
+                _log(f"Phase-1 VIX spike filter: prior_vix={prior_vix:.1f} gap={gap*100:.2f}% — no trades today")
+        if vix_spike_day:
+            return
+
         mod = int(row["minute_of_day"]) - 9 * 60 - 15
         if mod < ENTRY_MIN or t >= HARD_CUTOFF:
             return
@@ -312,6 +365,10 @@ def run_live(kite: KiteClient, model: lgb.Booster,
         if str(row["regime"]) in SKIP_REGIMES:
             return
         if n_trades >= MAX_TRADES or daily_pnl <= DAILY_HALT:
+            return
+        # Phase-1: intraday cumulative halt
+        if intraday_cum <= INTRADAY_CUM_HALT:
+            _log(f"Phase-1 intraday halt: cum_pnl=₹{intraday_cum:+,.0f}")
             return
 
         feat_row = pd.DataFrame([{f: row.get(f, 0.0) for f in FUTURES_FEATURES}])
