@@ -8,11 +8,11 @@ Reads the persistent ledger and reports:
   - Equity curve (terminal-friendly)
   - Halt-condition alerts
 
-Halt conditions (writes the kill-switch file when triggered):
-  - Trailing 30-day Sharpe < 0           → SOFT HALT (recommend stop)
-  - Cumulative drawdown > -₹150,000      → HARD HALT (must stop)
-  - Trailing 5-day net PnL < -₹50,000    → SOFT HALT
-  - 7+ consecutive losing days           → SOFT HALT
+Halt conditions:
+  - Cumulative drawdown > -₹150,000      → HARD HALT (writes kill-switch, blocks further runs)
+  - Trailing 30-day Sharpe < 0.5         → SOFT HALT (alert only — does NOT block)
+  - Trailing 5-day net PnL < -₹50,000    → SOFT HALT (alert only)
+  - 7+ consecutive losing days           → SOFT HALT (alert only)
 """
 from __future__ import annotations
 
@@ -102,24 +102,31 @@ def equity_curve_ascii(trades: pd.DataFrame, width: int = 80) -> str:
 
 
 def trigger_halts(all_m: dict, t30_m: dict, t5_m: dict,
-                    consec_loss_days: int) -> list[str]:
-    halts = []
+                    consec_loss_days: int) -> tuple[list[str], list[str]]:
+    """Return (hard_halts, soft_halts).
+
+    Hard halts write the kill-switch and block further runs.
+    Soft halts print a WARNING but do NOT block — they are alerts only,
+    so a 30-day measurement run is never frozen mid-way by a soft condition.
+    """
+    hard: list[str] = []
+    soft: list[str] = []
     if all_m["max_drawdown_inr"] <= HARD_DD_HALT_INR:
-        halts.append(f"HARD HALT: cumulative drawdown "
-                       f"₹{all_m['max_drawdown_inr']:+,.0f} ≤ "
-                       f"₹{HARD_DD_HALT_INR:+,.0f}")
+        hard.append(f"HARD HALT: cumulative drawdown "
+                    f"₹{all_m['max_drawdown_inr']:+,.0f} ≤ "
+                    f"₹{HARD_DD_HALT_INR:+,.0f}")
     if t30_m["n_trades"] >= 30 and t30_m["sharpe_daily_ann"] < SOFT_30D_SHARPE_HALT:
-        halts.append(f"SOFT HALT: 30-day Sharpe "
-                       f"{t30_m['sharpe_daily_ann']:+.2f} < "
-                       f"{SOFT_30D_SHARPE_HALT:+.2f}")
+        soft.append(f"SOFT HALT (alert only): 30-day Sharpe "
+                    f"{t30_m['sharpe_daily_ann']:+.2f} < "
+                    f"{SOFT_30D_SHARPE_HALT:+.2f}")
     if t5_m["total_pnl_inr"] <= SOFT_5D_PNL_HALT_INR:
-        halts.append(f"SOFT HALT: trailing 5-day PnL "
-                       f"₹{t5_m['total_pnl_inr']:+,.0f} ≤ "
-                       f"₹{SOFT_5D_PNL_HALT_INR:+,.0f}")
+        soft.append(f"SOFT HALT (alert only): trailing 5-day PnL "
+                    f"₹{t5_m['total_pnl_inr']:+,.0f} ≤ "
+                    f"₹{SOFT_5D_PNL_HALT_INR:+,.0f}")
     if consec_loss_days >= SOFT_CONSEC_LOSS_DAYS:
-        halts.append(f"SOFT HALT: {consec_loss_days} consecutive losing "
-                       f"days ≥ {SOFT_CONSEC_LOSS_DAYS}")
-    return halts
+        soft.append(f"SOFT HALT (alert only): {consec_loss_days} consecutive "
+                    f"losing days ≥ {SOFT_CONSEC_LOSS_DAYS}")
+    return hard, soft
 
 
 def consec_losing_days(trades: pd.DataFrame) -> int:
@@ -413,18 +420,23 @@ def main() -> int:
     t30_m = metrics(halt_30)
     t5_m = metrics(halt_5)
     consec = consec_losing_days(live_a)
-    halts = trigger_halts(all_m, t30_m, t5_m, consec) if not live_a.empty else []
+    hard_halts, soft_halts = trigger_halts(all_m, t30_m, t5_m, consec) if not live_a.empty else ([], [])
+    halts = hard_halts + soft_halts
     print("\n  -- HALT CHECKS (Variant A live only) --")
     if not halts:
         print("  OK: all clear")
     else:
-        for h in halts:
+        for h in hard_halts:
+            print(f"  *** {h} ***")
+        for h in soft_halts:
             print(f"  WARNING: {h}")
-        if args.write_halt and not KILL_SWITCH.exists():
+        # Only a HARD halt writes the kill-switch and blocks further runs.
+        # Soft halts are alerts only — the 30-day measurement run continues.
+        if hard_halts and args.write_halt and not KILL_SWITCH.exists():
             KILL_SWITCH.write_text(
-                "Paper trading halted by paper_trade_status.py\n"
+                "Paper trading halted by paper_status.py\n"
                 f"At: {pd.Timestamp.now().isoformat()}\n"
-                "Reasons:\n  - " + "\n  - ".join(halts) + "\n"
+                "Reasons:\n  - " + "\n  - ".join(hard_halts) + "\n"
                 "\nDelete this file to resume after investigation.\n"
             )
             print(f"\n  -> kill-switch written to {KILL_SWITCH}")
@@ -435,7 +447,7 @@ def main() -> int:
         for line in rolling_stability_report(live_a):
             print(line)
 
-    return 0 if not halts else (3 if any("HARD HALT" in h for h in halts) else 2)
+    return 0 if not halts else (3 if hard_halts else 2)
 
 
 if __name__ == "__main__":

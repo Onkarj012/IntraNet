@@ -74,8 +74,8 @@ def main() -> int:
         common_runner_args.append("--ignore-kill-switch")
 
     steps = [
-        ("Variant A paper run", [sys.executable, "scripts/paper_trade_daily.py", *common_runner_args]),
-        ("Variant C paper run", [sys.executable, "scripts/paper_trade_variant_c.py", *common_runner_args]),
+        ("Variant A paper run", [sys.executable, "scripts/trading/paper_trade.py", *common_runner_args]),
+        ("Variant C paper run", [sys.executable, "scripts/trading/paper_trade_variant_c.py", *common_runner_args]),
     ]
 
     report = OpsRunReport(run_timestamp=str(pd.Timestamp.now(tz="Asia/Kolkata")))
@@ -92,7 +92,7 @@ def main() -> int:
 
     status_cmd = [
         sys.executable,
-        "scripts/paper_trade_status.py",
+        "scripts/trading/paper_status.py",
         "--ledger",
         args.ledger,
         "--write-halt",

@@ -18,18 +18,18 @@ performance drift over time.
 ## Architecture
 
 ```
-data/nifty_intraday/NIFTY 50_minute.csv      (updated daily, EOD)
+data/nifty_intraday/NIFTY 50_minute.csv      (updated daily via kite_eod_cache.py)
         ↓
-scripts/paper_trade_daily.py                 ← run after market close
+scripts/trading/paper_trade.py               ← run after market close
         ↓
 results/router_v0/paper_trading_ledger.csv   (append-only)
         ↓
-scripts/paper_trade_status.py                ← run anytime
+scripts/trading/paper_status.py              ← run anytime
 ```
 
 Locked components (do NOT modify without restarting validation):
 - Model: `models/router_v0/futures/final_long.lgb`
-- Feature builder: `src/optinet_router/futures_features.py`
+- Feature builder: `src/engine/features.py`
 - Hard filters: `TARGET_PCT=0.0040, STOP_PCT=0.0030, HORIZON=60,
   COSTS_INR=105, SIGNAL_PCT=0.85, HIGH_CONF_PCT=0.95,
   SKIP_REGIMES={"compression"}, SKIP 11:00-11:59, ENTRY_MIN=30,
@@ -38,28 +38,51 @@ Locked components (do NOT modify without restarting validation):
 
 ## Daily workflow
 
-### 1) Update source data
+### 0) One-time setup
 
-Make sure `data/nifty_intraday/NIFTY 50_minute.csv` has today's bars.
-That update is upstream of this engine; ensure your data pipeline writes
-to that file on EOD.
+Ensure `.env` contains the Kite credentials:
 
-```bash
-# Sanity check: is today's data there?
-tail -1 "data/nifty_intraday/NIFTY 50_minute.csv"
+```
+KITE_API_KEY=...
+KITE_API_SECRET=...
+KITE_USER_ID=...
+KITE_PASSWORD=...
 ```
 
-### 2) Run paper trader
+`KITE_ACCESS_TOKEN` is written automatically by `scripts/data/kite_login.py`
+each morning. Run it once before the cron fires.
+
+### 1) Run the full daily chain (recommended)
 
 ```bash
-# Most common: replay today / most recent day in the data file
-.venv/bin/python scripts/paper_trade_daily.py --auto
+.venv/bin/python scripts/trading/daily_run.py
+```
 
-# Or explicit
-.venv/bin/python scripts/paper_trade_daily.py --date 2026-05-28
+This chains in order:
+1. EOD data cache — appends today's NIFTY bars + VIX (uses `KITE_ACCESS_TOKEN` from `.env`)
+2. Paper trading ops — Variant A + C replay, status dashboard, halt checks
+
+The Kite access token must be refreshed manually each morning via
+`scripts/data/kite_login.py` before the cron fires. If the token is
+stale the EOD cache step will fail and the paper run is skipped.
+
+### 2) Run steps individually
+
+```bash
+# Refresh Kite token (headless, uses KITE_TOTP_SECRET)
+.venv/bin/python scripts/data/kite_login.py
+
+# Fetch today's NIFTY bars + VIX from Kite
+.venv/bin/python scripts/data/kite_eod_cache.py
+
+# Replay today / most recent day in the data file
+.venv/bin/python scripts/trading/paper_trade.py --auto
+
+# Or explicit date
+.venv/bin/python scripts/trading/paper_trade.py --date 2026-05-28
 
 # Or re-run a date (overwrites prior rows for that date)
-.venv/bin/python scripts/paper_trade_daily.py --date 2026-05-28 --force
+.venv/bin/python scripts/trading/paper_trade.py --date 2026-05-28 --force
 ```
 
 The runner is **idempotent**: re-running a date that's already in the
@@ -70,20 +93,20 @@ operation safe — duplicate cron runs don't double-count.
 
 ```bash
 # Just live paper trades (start showing real signal after 30+ days)
-.venv/bin/python scripts/paper_trade_status.py
+.venv/bin/python scripts/trading/paper_status.py
 
 # Include the bootstrap forward-walk rows (full historical context)
-.venv/bin/python scripts/paper_trade_status.py --include-bootstrap
+.venv/bin/python scripts/trading/paper_status.py --include-bootstrap
 
 # With per-month breakdown
-.venv/bin/python scripts/paper_trade_status.py --include-bootstrap --by-month
+.venv/bin/python scripts/trading/paper_status.py --include-bootstrap --by-month
 
-# As part of a cron job — write the kill-switch file when halts trigger
-.venv/bin/python scripts/paper_trade_status.py --write-halt
+# As part of a cron job — write the kill-switch file when a HARD halt triggers
+.venv/bin/python scripts/trading/paper_status.py --write-halt
 ```
 
 The kill-switch file is `results/router_v0/PAPER_TRADING_HALTED`. While it
-exists, `paper_trade_daily.py` refuses to run. Delete the file (or pass
+exists, `paper_trade.py` refuses to run. Delete the file (or pass
 `--ignore-kill-switch`) to resume after investigation.
 
 ## Cron setup
@@ -94,33 +117,35 @@ and source data is updated):
 ```cron
 # m  h    dom  mon  dow   command
   0  18    *    *   1-5   cd /Users/onkarj012/Projects/market/intranet_optinet && \
-                          .venv/bin/python scripts/paper_trade_daily.py --auto \
-                          >> logs/paper_trade_daily.log 2>&1 && \
-                          .venv/bin/python scripts/paper_trade_status.py --write-halt \
-                          >> logs/paper_trade_status.log 2>&1
+                          .venv/bin/python scripts/trading/daily_run.py \
+                          >> logs/daily_run.log 2>&1
 ```
 
-(NSE holidays will produce no bars for that date, so paper_trade_daily
+(NSE holidays will produce no bars for that date, so paper_trade
 will simply log "no bars" and exit clean.)
 
 ## Halt conditions
 
-Halts are checked by `paper_trade_status.py`. With `--write-halt`, a
-kill-switch file is written; the daily runner will refuse to run while it
-exists.
+Halts are checked by `paper_status.py`. With `--write-halt`, the
+kill-switch is written **only on a HARD halt**. Soft halts print a
+WARNING but do NOT block the run — this ensures the full 30-day
+measurement window is never frozen by a soft condition.
 
 | Condition | Severity | Threshold |
 |---|---|---|
-| Cumulative drawdown | **HARD HALT** | ≤ −₹150,000 |
-| Trailing 30-day Sharpe | SOFT HALT | < 0 (with ≥ 30 trades) |
-| Trailing 5-day net PnL | SOFT HALT | ≤ −₹50,000 |
-| Consecutive losing days | SOFT HALT | ≥ 7 |
+| Cumulative drawdown | **HARD HALT** (blocks) | ≤ −₹150,000 |
+| Trailing 30-day Sharpe | SOFT HALT (alert only) | < 0.5 (with ≥ 30 trades) |
+| Trailing 5-day net PnL | SOFT HALT (alert only) | ≤ −₹50,000 |
+| Consecutive losing days | SOFT HALT (alert only) | ≥ 7 |
 
-**HARD HALT** = stop trading immediately, do a full review before
-resuming. **SOFT HALT** = stop trading, investigate, resume only if
-the cause is understood (e.g. known macro event vs model degradation).
+**HARD HALT** = kill-switch written, `paper_trade.py` refuses to run.
+Do a full review before resuming.
 
-Tune thresholds in `scripts/paper_trade_status.py`. Defaults are sized
+**SOFT HALT** = WARNING printed in the status dashboard. The run
+continues so you collect the full 30-day dataset. Investigate the
+cause, but do not tweak parameters during the measurement window.
+
+Tune thresholds in `scripts/trading/paper_status.py`. Defaults are sized
 against the forward-walk drawdown of −₹74k (so −₹150k is roughly 2× that).
 
 ## What "good" looks like
@@ -216,19 +241,19 @@ If 30-day Sharpe falls below p10 for 3 consecutive days, escalate.
 
 ## Live execution scaffolding (DRY-RUN BY DEFAULT)
 
-`scripts/live_execute.py` reads ledger rows and emits order tickets to
+`scripts/trading/execute_order.py` reads ledger rows and emits order tickets to
 `results/router_v0/order_tickets.jsonl`. By default it logs only — no
 real orders are placed.
 
 ```bash
 # Default: dry-run, most recent paper-trading day, Variant A only
-.venv/bin/python scripts/live_execute.py --auto
+.venv/bin/python scripts/trading/execute_order.py --auto
 
 # Specific date, Variant C only
-.venv/bin/python scripts/live_execute.py --date 2026-04-15 --variants C
+.venv/bin/python scripts/trading/execute_order.py --date 2026-04-15 --variants C
 
 # Both variants
-.venv/bin/python scripts/live_execute.py --date 2026-04-15 --variants A,C
+.venv/bin/python scripts/trading/execute_order.py --date 2026-04-15 --variants A,C
 ```
 
 ### Triple-key live-execution gate
@@ -245,19 +270,19 @@ If ANY gate fails, the script silently falls back to dry-run.
 
 ### Final safety layer
 
-Even when the gate clears, `UpstoxOrderClient.place_order()` raises
+Even when the gate clears, `KiteOrderClient.place_order()` raises
 `NotImplementedError`. Real execution requires an operator to manually
-edit `src/optinet/v5_runtime/orders.py` to wire the Upstox SDK. This is
-intentional — the Variant A model has not yet earned the right to fire
-real orders, and the codebase enforces that on every run.
+implement `place_order` / `get_status` / `cancel` in
+`src/engine/orders.py:KiteOrderClient` against the Kite Connect SDK.
+This is intentional — the Variant A model has not yet earned the right
+to fire real orders, and the codebase enforces that on every run.
 
 ### When you're ready to wire live (after 1+ month of clean paper data)
 
-1. `pip install upstox-python-sdk` (or your broker's SDK)
-2. Set Upstox env vars: `UPSTOX_API_KEY`, `UPSTOX_API_SECRET`,
-   `UPSTOX_ACCESS_TOKEN`
+1. Kite Connect SDK is already installed (`kiteconnect==5.0.1`)
+2. Credentials are already in `.env` (`KITE_API_KEY`, `KITE_API_SECRET`, etc.)
 3. Implement `place_order` / `get_status` / `cancel` in
-   `src/optinet/v5_runtime/orders.py:UpstoxOrderClient` against the SDK
+   `src/engine/orders.py:KiteOrderClient` against the SDK
 4. Generate a one-time token:
    ```bash
    openssl rand -hex 16 > results/router_v0/LIVE_TOKEN
@@ -274,15 +299,22 @@ real orders, and the codebase enforces that on every run.
 
 | File | Purpose |
 |---|---|
-| `scripts/paper_trade_daily.py` | One-day replay + ledger append |
-| `scripts/paper_trade_status.py` | Read-only metrics + halt checks |
-| `scripts/paper_trade_bootstrap.py` | One-shot ledger seeding |
-| `scripts/forward_walk_2024_2026.py` | The full Phase 0-3 validation pipeline |
-| `scripts/tier1_validation.py` | Pre-deployment validation (already passed) |
+| `scripts/trading/daily_run.py` | **Single cron entrypoint** — login → EOD cache → paper ops |
+| `scripts/trading/paper_trade.py` | One-day replay + ledger append (Variant A) |
+| `scripts/trading/paper_trade_variant_c.py` | One-day replay (Variant C) |
+| `scripts/trading/paper_status.py` | Read-only metrics + halt checks |
+| `scripts/trading/paper_ops.py` | Orchestrates A + C runners + status |
+| `scripts/trading/paper_bootstrap.py` | One-shot ledger seeding |
+| `scripts/trading/execute_order.py` | Live execution scaffold (dry-run by default) |
+| `scripts/trading/live_signal.py` | Real-time Kite WebSocket signal cards (manual) |
+| `scripts/data/kite_login.py` | Headless TOTP Kite login |
+| `scripts/data/kite_eod_cache.py` | Fetch + append today's NIFTY bars + VIX |
+| `scripts/research/forward_walk.py` | The full Phase 0-3 validation pipeline |
+| `scripts/research/tier1_validate.py` | Pre-deployment validation (already passed) |
 | `results/router_v0/paper_trading_ledger.csv` | Append-only ledger |
 | `results/router_v0/PAPER_TRADING_HALTED` | Kill-switch file (when present) |
 | `results/router_v0/tier1_validation.json` | Tier-1 validation record |
-| `docs/forward_walk_verdict.md` | Why we're paper trading |
+| `docs/research/forward_walk_verdict.md` | Why we're paper trading |
 
 ## Ledger schema
 
@@ -322,18 +354,18 @@ The CSV is append-only. If a manual edit broke schema, restore from git
 mv results/router_v0/paper_trading_ledger.csv results/router_v0/paper_trading_ledger.corrupt.csv
 
 # 2) re-bootstrap historical
-.venv/bin/python scripts/paper_trade_bootstrap.py
+.venv/bin/python scripts/trading/paper_bootstrap.py
 
 # 3) re-replay every paper-trading date
 for d in 2026-05-15 2026-05-16 ...; do
-  .venv/bin/python scripts/paper_trade_daily.py --date "$d" --force
+  .venv/bin/python scripts/trading/paper_trade.py --date "$d" --force
 done
 ```
 
 ### Model file missing
 
 `models/router_v0/futures/final_long.lgb` is the locked production model.
-If lost, regenerate from sources by re-running `scripts/train_futures_engine.py`
+If lost, regenerate from sources by re-running `scripts/research/backtest_futures.py`
 (this will produce a new model — not byte-identical, so re-run Tier 1
 and re-bootstrap before resuming).
 
