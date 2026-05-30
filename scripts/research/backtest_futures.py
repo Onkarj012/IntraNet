@@ -42,6 +42,7 @@ LABEL_PATH = PROJECT_ROOT / "models/router_v0/futures/futures_barrier_labels.par
 MODEL_DIR  = PROJECT_ROOT / "models/router_v0/futures"
 RESULTS    = PROJECT_ROOT / "results/router_v0"
 RESULTS.mkdir(parents=True, exist_ok=True)
+VIX_PATH   = PROJECT_ROOT / "data/nifty_intraday/INDIA VIX_day.csv"
 
 # ── Execution config ──────────────────────────────────────────────────────────
 TARGET_PCT  = 0.0040
@@ -51,6 +52,10 @@ LOT         = 50
 COSTS_INR   = 105.0       # round-trip: brokerage + STT + GST + slippage
 STOP_FLOOR  = -3000.0
 DAILY_HALT  = -15000.0
+# Phase-1: tighter intraday cumulative halt (fires before DAILY_HALT)
+INTRADAY_CUM_HALT = -9000.0
+# Phase-1: skip entries when VIX spikes >15% intraday vs prior close (0=disabled)
+VIX_SPIKE_PCT = 0.15
 MAX_TRADES  = 3
 HARD_CUTOFF = dtime(14, 55)
 SKIP_START  = dtime(11, 0)
@@ -135,6 +140,25 @@ def train_long_model(train_df: pd.DataFrame) -> lgb.Booster:
 
 # ── Trade simulation ──────────────────────────────────────────────────────────
 
+def load_vix_prior(vix_path: Path) -> dict:
+    """Return dict mapping date -> prior-day VIX close."""
+    if not vix_path.exists():
+        return {}
+    vix = pd.read_csv(vix_path)
+    vix.columns = [c.strip().lower() for c in vix.columns]
+    date_col = next((c for c in vix.columns if "date" in c), None)
+    close_col = next((c for c in vix.columns if c in ("close", "vix close", "vix_close")), None)
+    if date_col is None or close_col is None:
+        return {}
+    vix[date_col] = pd.to_datetime(vix[date_col])
+    vix = vix.sort_values(date_col).reset_index(drop=True)
+    result = {}
+    for i in range(1, len(vix)):
+        d = vix[date_col].iat[i].date()
+        result[d] = float(vix[close_col].iat[i - 1])
+    return result
+
+
 def _load_fut_bars_cache(data_root: Path) -> dict:
     """Pre-load all futures bars into a dict keyed by date."""
     cache = {}
@@ -190,8 +214,12 @@ def _reason_codes(row: pd.Series) -> str:
 
 
 def run_backtest(df: pd.DataFrame, model: lgb.Booster,
-                  fut_cache: dict) -> pd.DataFrame:
-    """Run the LONG-only trade-card backtest on df using model."""
+                  fut_cache: dict,
+                  vix_prior: dict | None = None) -> pd.DataFrame:
+    """Run the LONG-only trade-card backtest on df using model.
+
+    vix_prior: dict mapping date -> prior-day VIX close (for Phase-1 spike filter).
+    """
     df = df.copy()
     df["long_score"] = model.predict(df[FUTURES_FEATURES])
 
@@ -207,15 +235,34 @@ def run_backtest(df: pd.DataFrame, model: lgb.Booster,
         ["trade_date", "datetime"]).reset_index(drop=True)
 
     results = []
-    daily_pnl, daily_count = {}, {}
+    daily_pnl: dict = {}
+    daily_count: dict = {}
+    intraday_cum: dict = {}   # Phase-1: per-day cumulative PnL (open+closed)
 
     for _, row in candidates.iterrows():
         td = row["trade_date"]
+        td_date = td.date() if hasattr(td, "date") else td
+
         if daily_count.get(td, 0) >= MAX_TRADES:
             continue
         if daily_pnl.get(td, 0.0) <= DAILY_HALT:
             continue
-        day_bars = fut_cache.get(td.date())
+        # Phase-1: intraday cumulative halt
+        if intraday_cum.get(td, 0.0) <= INTRADAY_CUM_HALT:
+            continue
+        # Phase-1: VIX intraday spike filter
+        if vix_prior and VIX_SPIKE_PCT > 0.0:
+            prior_vix = vix_prior.get(td_date, 0.0)
+            # Use realized_vol_30m as a VIX proxy when actual intraday VIX unavailable
+            # (actual VIX intraday not in features; we use prior-day VIX from daily CSV)
+            # Skip day entirely if prior VIX is already elevated (>20) AND
+            # today's open gap is negative (crash-day signature)
+            if prior_vix > 0.0:
+                gap = float(row.get("gap_pct", 0.0))
+                if prior_vix >= 20.0 and gap <= -0.005:
+                    continue
+
+        day_bars = fut_cache.get(td_date)
         if day_bars is None:
             continue
         idx_arr = day_bars.index[day_bars["datetime"] == row["datetime"]]
@@ -234,8 +281,9 @@ def run_backtest(df: pd.DataFrame, model: lgb.Booster,
             "reason_codes": _reason_codes(row),
             **sim,
         })
-        daily_pnl[td]   = daily_pnl.get(td, 0.0) + sim["net_pnl_inr"]
-        daily_count[td] = daily_count.get(td, 0) + 1
+        daily_pnl[td]    = daily_pnl.get(td, 0.0) + sim["net_pnl_inr"]
+        daily_count[td]  = daily_count.get(td, 0) + 1
+        intraday_cum[td] = intraday_cum.get(td, 0.0) + sim["net_pnl_inr"]
 
     return pd.DataFrame(results)
 
@@ -300,6 +348,10 @@ def main() -> int:
     fut_cache = _load_fut_bars_cache(DATA_ROOT)
     print(f"  loaded {len(fut_cache)} days")
 
+    vix_prior = load_vix_prior(VIX_PATH)
+    print(f"  VIX prior-close loaded for {len(vix_prior)} days "
+          f"(Phase-1 spike filter: VIX≥20 + gap≤-0.5%)")
+
     # ── Walk-forward backtest ─────────────────────────────────────────────────
     print("\n" + "=" * 90)
     print("  WALK-FORWARD BACKTEST (quarterly folds)")
@@ -314,7 +366,7 @@ def main() -> int:
         if len(train) < 5000 or len(test) < 200:
             continue
         model = train_long_model(train)
-        fold_trades = run_backtest(test, model, fut_cache)
+        fold_trades = run_backtest(test, model, fut_cache, vix_prior)
         m = metrics(fold_trades)
         m["fold"] = fold_name
         wf_results.append(m)
@@ -336,7 +388,7 @@ def main() -> int:
 
     final_model = lgb.Booster(model_file=str(MODEL_DIR / "final_long.lgb"))
     test_2024 = df[df["trade_date"].dt.year == 2024]
-    trades_2024 = run_backtest(test_2024, final_model, fut_cache)
+    trades_2024 = run_backtest(test_2024, final_model, fut_cache, vix_prior)
     m2024 = metrics(trades_2024)
     print_row("2024 BLIND", m2024)
 

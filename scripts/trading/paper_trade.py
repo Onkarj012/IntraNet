@@ -63,6 +63,11 @@ LOT         = 50
 COSTS_INR   = 105.0
 STOP_FLOOR  = -3000.0
 DAILY_HALT  = -15000.0
+# Phase-1: tighter intraday cumulative halt
+INTRADAY_CUM_HALT = -9000.0
+# Phase-1: skip when prior-day VIX >= threshold AND gap <= -0.5%
+VIX_SPIKE_THRESHOLD = 20.0
+VIX_GAP_THRESHOLD   = -0.005
 MAX_TRADES  = 3
 HARD_CUTOFF = dtime(14, 55)
 SKIP_START  = dtime(11, 0)
@@ -71,6 +76,8 @@ ENTRY_MIN   = 30
 SIGNAL_PCT  = 0.85
 HIGH_CONF_PCT = 0.95
 SKIP_REGIMES = {"compression"}
+
+VIX_PATH = PROJECT_ROOT / "data/nifty_intraday/INDIA VIX_day.csv"
 
 MODEL_VERSION = "futures_long_v1"
 LEDGER_COLS = [
@@ -84,6 +91,25 @@ LEDGER_COLS = [
 
 
 # ─────────────────────────────────────────────────────────────────────────────
+
+def load_prior_vix(target_date: pd.Timestamp) -> float:
+    """Return prior-day VIX close for target_date. Returns 0.0 if unavailable."""
+    if not VIX_PATH.exists():
+        return 0.0
+    try:
+        vix = pd.read_csv(VIX_PATH)
+        vix.columns = [c.strip().lower() for c in vix.columns]
+        date_col = next((c for c in vix.columns if "date" in c), None)
+        close_col = next((c for c in vix.columns if c in ("close", "vix close", "vix_close")), None)
+        if date_col is None or close_col is None:
+            return 0.0
+        vix[date_col] = pd.to_datetime(vix[date_col])
+        vix = vix.sort_values(date_col).reset_index(drop=True)
+        prior = vix[vix[date_col] < target_date]
+        return float(prior[close_col].iloc[-1]) if not prior.empty else 0.0
+    except Exception:
+        return 0.0
+
 
 def load_minute_bars(target_date: pd.Timestamp) -> pd.DataFrame:
     """Load and prepare NIFTY index minute bars for one trading day."""
@@ -213,12 +239,31 @@ def run_one_day(target_date: pd.Timestamp,
 
     rows = []
     daily_pnl = 0.0
+    intraday_cum = 0.0   # Phase-1: cumulative PnL this session
     n_taken = 0
     run_ts = datetime.now().isoformat(timespec="seconds")
+
+    # Phase-1: VIX spike filter — load prior-day VIX
+    prior_vix = load_prior_vix(target_date)
+    # Compute gap from first eligible bar
+    gap_pct = 0.0
+    if not candidates.empty:
+        first_bar = bars_for_sim.iloc[0]
+        prev_close = bars_for_sim["fut_close"].iloc[0]  # proxy: use open as gap ref
+        gap_pct = float(candidates.iloc[0].get("gap_pct", 0.0))
+    vix_spike_day = (prior_vix >= VIX_SPIKE_THRESHOLD and gap_pct <= VIX_GAP_THRESHOLD)
+    if vix_spike_day:
+        print(f"  Phase-1 VIX spike filter: prior_vix={prior_vix:.1f} gap={gap_pct*100:.2f}% — skipping day")
+        return pd.DataFrame(columns=LEDGER_COLS)
+
     for _, c in candidates.iterrows():
         if n_taken >= MAX_TRADES:
             break
         if daily_pnl <= DAILY_HALT:
+            break
+        # Phase-1: intraday cumulative halt
+        if intraday_cum <= INTRADAY_CUM_HALT:
+            print(f"  Phase-1 intraday halt: cum_pnl=₹{intraday_cum:+,.0f}")
             break
         idx_arr = bars_for_sim.index[bars_for_sim["datetime"] == c["datetime"]]
         if len(idx_arr) == 0:
@@ -251,6 +296,7 @@ def run_one_day(target_date: pd.Timestamp,
             "source": "paper",
         })
         daily_pnl += sim["net_pnl_inr"]
+        intraday_cum += sim["net_pnl_inr"]
         n_taken += 1
 
     return pd.DataFrame(rows, columns=LEDGER_COLS)

@@ -18,6 +18,10 @@ class RiskLimits:
     max_orders_per_day: int = 3
     max_open_positions: int = 1
     daily_loss_halt_inr: float = -15_000.0
+    # Phase-1 hardening: tighter intraday cumulative halt (fires before daily_loss_halt)
+    intraday_cum_halt_inr: float = -9_000.0   # halt after -₹9k in session
+    # Phase-1 hardening: skip entries when VIX has spiked >15% vs prior close
+    vix_spike_pct: float = 0.15               # 0.0 = disabled
     no_new_entries_after: dtime = dtime(14, 55)
     require_flat_before_entry: bool = True
 
@@ -26,6 +30,11 @@ class RiskLimits:
 class BrokerState:
     open_positions: int = 0
     day_realized_pnl_inr: float = 0.0
+    # Phase-1: intraday cumulative PnL (resets each session, tracks open+closed)
+    intraday_cum_pnl_inr: float = 0.0
+    # Phase-1: VIX intraday spike detection
+    vix_prior_close: float = 0.0   # 0.0 = unknown / disabled
+    vix_current: float = 0.0       # 0.0 = unknown / disabled
 
 
 @dataclass(frozen=True)
@@ -81,6 +90,25 @@ def evaluate_ticket_risk(
             f"day realized PnL {broker_state.day_realized_pnl_inr:+,.0f} "
             f"<= {limits.daily_loss_halt_inr:+,.0f}"
         )
+    # Phase-1: intraday cumulative halt (tighter than daily_loss_halt)
+    if (limits.intraday_cum_halt_inr < 0.0 and
+            broker_state.intraday_cum_pnl_inr <= limits.intraday_cum_halt_inr):
+        reasons.append(
+            f"intraday cumulative PnL {broker_state.intraday_cum_pnl_inr:+,.0f} "
+            f"<= {limits.intraday_cum_halt_inr:+,.0f}"
+        )
+    # Phase-1: VIX intraday spike filter
+    if (limits.vix_spike_pct > 0.0
+            and broker_state.vix_prior_close > 0.0
+            and broker_state.vix_current > 0.0):
+        spike = (broker_state.vix_current - broker_state.vix_prior_close) / broker_state.vix_prior_close
+        if spike >= limits.vix_spike_pct:
+            reasons.append(
+                f"VIX intraday spike {spike*100:.1f}% "
+                f"(current={broker_state.vix_current:.1f}, "
+                f"prior_close={broker_state.vix_prior_close:.1f}) "
+                f">= {limits.vix_spike_pct*100:.0f}% threshold"
+            )
     if limits.require_flat_before_entry and broker_state.open_positions > 0:
         reasons.append("broker state is not flat before entry")
     if broker_state.open_positions >= limits.max_open_positions:
@@ -99,6 +127,8 @@ def evaluate_ticket_risk(
         "max_orders_per_day": limits.max_orders_per_day,
         "max_open_positions": limits.max_open_positions,
         "daily_loss_halt_inr": limits.daily_loss_halt_inr,
+        "intraday_cum_halt_inr": limits.intraday_cum_halt_inr,
+        "vix_spike_pct": limits.vix_spike_pct,
         "no_new_entries_after": limits.no_new_entries_after.isoformat(),
         "require_flat_before_entry": limits.require_flat_before_entry,
     })

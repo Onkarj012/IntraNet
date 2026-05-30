@@ -370,5 +370,75 @@ def main() -> int:
     return 0
 
 
+MIN_TRADES_PER_MONTH = 50   # Phase-3 gate: don't drop below this
+
+
+def sweep_thresholds(scored: pd.DataFrame, full_features: pd.DataFrame) -> int:
+    """Phase-3: sweep 85th/90th/95th percentile entry thresholds.
+
+    Uses the existing scored forward-walk features (no rerun of backtest).
+    Picks the threshold that maximises Sharpe without dropping below
+    MIN_TRADES_PER_MONTH average.
+
+    Saves results/router_v0/threshold_sweep.json.
+    """
+    print("\n" + "=" * 80)
+    print("  Phase-3: Entry threshold sweep (85 / 90 / 95th percentile)")
+    print(f"  Constraint: >= {MIN_TRADES_PER_MONTH} trades/month average")
+    print("=" * 80)
+
+    results = []
+    for pct in [0.85, 0.90, 0.95]:
+        trades = run_one_config(scored, full_features,
+                                 ret_5d_cut=None, ret_20d_cut=None,
+                                 vix_state=False, intraday_halt=-15000.0,
+                                 signal_pct=pct)
+        m = metrics(trades)
+        results.append({"signal_pct": pct, **m})
+        label = f"pct={int(pct*100)}th"
+        print(f"  {label:<12s}  n={m['n_trades']:>5d}  "
+              f"trades/30d={m['trades_per_30d']:>5.1f}  "
+              f"win={m['win_rate']*100:>5.1f}%  "
+              f"PnL=Rs{m['total_pnl_inr']:>+11,.0f}  "
+              f"Sharpe={m['sharpe']:>+5.2f}  "
+              f"DD=Rs{m['max_dd_inr']:>+10,.0f}")
+
+    # Pick best Sharpe that meets the trade-count gate
+    eligible = [r for r in results if r["trades_per_30d"] >= MIN_TRADES_PER_MONTH]
+    if not eligible:
+        print(f"\n  No threshold meets >={MIN_TRADES_PER_MONTH} trades/month -- keeping 85th")
+        best = results[0]
+    else:
+        best = max(eligible, key=lambda r: r["sharpe"])
+
+    print(f"\n  Best threshold: {int(best['signal_pct']*100)}th percentile")
+    print(f"     Sharpe={best['sharpe']:+.2f}  trades/30d={best['trades_per_30d']:.1f}  "
+          f"PnL=Rs{best['total_pnl_inr']:+,.0f}")
+
+    out = {
+        "recommended_signal_pct": best["signal_pct"],
+        "sweep_results": results,
+        "constraint_trades_per_month": MIN_TRADES_PER_MONTH,
+    }
+    out_path = OUT_DIR / "threshold_sweep.json"
+    out_path.write_text(json.dumps(out, indent=2, default=str))
+    print(f"  -> {out_path}")
+    return 0
+
+
 if __name__ == "__main__":
-    sys.exit(main())
+    import argparse
+    ap = argparse.ArgumentParser()
+    ap.add_argument("--threshold-sweep", action="store_true",
+                    help="Phase-3: sweep 85/90/95th percentile thresholds only")
+    args, _ = ap.parse_known_args()
+
+    if args.threshold_sweep:
+        feats = pd.read_parquet(PROXY_FEATURES)
+        feats["datetime"]   = pd.to_datetime(feats["datetime"])
+        feats["trade_date"] = pd.to_datetime(feats["trade_date"])
+        model = lgb.Booster(model_file=str(MODEL_PATH))
+        scored = score_proxy_features(feats, model)
+        sys.exit(sweep_thresholds(scored, feats))
+    else:
+        sys.exit(main())

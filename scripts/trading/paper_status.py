@@ -29,7 +29,7 @@ KILL_SWITCH    = PROJECT_ROOT / "results/router_v0/PAPER_TRADING_HALTED"
 
 # Halt thresholds
 HARD_DD_HALT_INR        = -150_000.0
-SOFT_30D_SHARPE_HALT    = 0.0
+SOFT_30D_SHARPE_HALT    = 0.5    # Phase-4: alert when rolling 30d Sharpe < 0.5
 SOFT_5D_PNL_HALT_INR    = -50_000.0
 SOFT_CONSEC_LOSS_DAYS   = 7
 
@@ -210,6 +210,64 @@ def tracking_check(t30: dict, ref: dict) -> list[str]:
     return lines
 
 
+def rolling_stability_report(trades: pd.DataFrame,
+                              window_days: int = 30) -> list[str]:
+    """Phase-4: compute rolling 30-day Sharpe + win-rate.
+
+    Returns a list of human-readable lines. Flags any window where
+    Sharpe < SOFT_30D_SHARPE_HALT (0.5) with a WARNING marker.
+    """
+    if trades.empty:
+        return ["  (no trades for rolling stability report)"]
+
+    daily = (trades.sort_values("trade_date")
+             .groupby("trade_date")["net_pnl_inr"]
+             .agg(pnl="sum",
+                  n_trades="count",
+                  n_wins=lambda s: (s > 0).sum())
+             .reset_index())
+    daily["trade_date"] = pd.to_datetime(daily["trade_date"])
+    daily = daily.set_index("trade_date").sort_index()
+
+    lines = [f"\n  -- ROLLING {window_days}-DAY STABILITY (Phase-4) --"]
+    lines.append(f"  Alert threshold: Sharpe < {SOFT_30D_SHARPE_HALT:.1f}")
+    lines.append(f"  {'Window end':<12s}  {'n':>4s}  {'Win%':>6s}  "
+                 f"{'PnL':>12s}  {'Sharpe':>7s}  Status")
+    lines.append("  " + "-" * 60)
+
+    # Slide a 30-calendar-day window ending at each trading day
+    dates = daily.index.tolist()
+    alerts = []
+    for end_date in dates:
+        start_date = end_date - pd.Timedelta(days=window_days)
+        window = daily[(daily.index > start_date) & (daily.index <= end_date)]
+        if len(window) < 5:
+            continue
+        pnl_series = window["pnl"]
+        sharpe = (pnl_series.mean() / pnl_series.std() * np.sqrt(252)
+                  if pnl_series.std() > 0 else 0.0)
+        win_rate = float(window["n_wins"].sum() / window["n_trades"].sum())
+        total_pnl = float(pnl_series.sum())
+        n = int(window["n_trades"].sum())
+        status = "OK"
+        if sharpe < SOFT_30D_SHARPE_HALT:
+            status = f"ALERT Sharpe={sharpe:+.2f} < {SOFT_30D_SHARPE_HALT:.1f}"
+            alerts.append((end_date, sharpe))
+        lines.append(f"  {end_date.date()!s:<12s}  {n:>4d}  "
+                     f"{100*win_rate:>5.1f}%  "
+                     f"Rs{total_pnl:>+10,.0f}  "
+                     f"{sharpe:>+6.2f}  {status}")
+
+    if alerts:
+        lines.append(f"\n  *** {len(alerts)} window(s) below Sharpe {SOFT_30D_SHARPE_HALT:.1f} ***")
+        for d, s in alerts[-3:]:
+            lines.append(f"      {d.date()}  Sharpe={s:+.2f}")
+    else:
+        lines.append(f"\n  All rolling windows above Sharpe {SOFT_30D_SHARPE_HALT:.1f} -- stable")
+
+    return lines
+
+
 def date_range_text(df: pd.DataFrame) -> str:
     if df.empty:
         return "(no rows)"
@@ -288,6 +346,8 @@ def main() -> int:
                           help="Write the kill-switch file if any halt triggers")
     parser.add_argument("--by-month", action="store_true",
                           help="Show per-month breakdown")
+    parser.add_argument("--rolling-stability", action="store_true",
+                          help="Phase-4: show rolling 30-day Sharpe + win-rate monitor")
     args = parser.parse_args()
 
     ledger_path = Path(args.ledger)
@@ -367,8 +427,13 @@ def main() -> int:
                 "Reasons:\n  - " + "\n  - ".join(halts) + "\n"
                 "\nDelete this file to resume after investigation.\n"
             )
-            print(f"\n  → kill-switch written to {KILL_SWITCH}")
+            print(f"\n  -> kill-switch written to {KILL_SWITCH}")
             return 3
+
+    # Phase-4: rolling stability dashboard
+    if args.rolling_stability or halts:
+        for line in rolling_stability_report(live_a):
+            print(line)
 
     return 0 if not halts else (3 if any("HARD HALT" in h for h in halts) else 2)
 
