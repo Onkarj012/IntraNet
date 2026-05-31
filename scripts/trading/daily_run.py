@@ -3,7 +3,8 @@
 
 Chains in order:
   1. EOD data cache  — appends today's NIFTY bars + VIX (requires valid KITE_ACCESS_TOKEN)
-  2. Paper trading ops — Variant A + C replay, status dashboard, halt checks
+  2. Futures paper trading ops — Variant A + C replay, status dashboard, halt checks
+  3. Equity momentum ops — update panel, generate picks, append ledger, status + halt checks
 
 The Kite access token must be refreshed manually each morning via
 `scripts/data/kite_login.py` before this script runs.
@@ -57,9 +58,18 @@ def main() -> int:
 
     # 2. Paper trading ops (Variant A + C + status + halt checks)
     # paper_ops.py already passes --write-halt to paper_status.py internally
-    rc = run("Step 2: Paper trading ops",
+    rc = run("Step 2: Futures paper trading ops",
              [PYTHON, "scripts/trading/paper_ops.py", "--auto"])
-    return rc
+    # futures halt is non-blocking for equity — equity runs independently
+    futures_rc = rc
+
+    # 3. Equity momentum ops (panel update → picks → ledger → status)
+    rc = run("Step 3: Equity momentum ops",
+             [PYTHON, "scripts/trading/equity_ops.py"])
+    equity_rc = rc
+
+    # Return worst exit code (3 > 2 > 0)
+    return max(futures_rc, equity_rc)
 
 
 if __name__ == "__main__":
