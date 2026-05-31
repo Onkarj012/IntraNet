@@ -33,6 +33,9 @@ sys.path.insert(0, str(_project_root / "src"))
 
 from equity.v8 import (
     V8Config,
+    TargetConfig,
+    PortfolioConfig,
+    BacktestConfig,
     WalkForwardBacktest,
     BacktestMetrics,
     TradeRecord,
@@ -43,6 +46,8 @@ from equity.v8 import (
     compute_buy_hold_metrics,
     compute_random_baseline,
 )
+from equity.v8.dataset import build_barrier_dataset
+from equity.universe import get_universe
 
 
 def parse_args() -> argparse.Namespace:
@@ -61,6 +66,15 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--target-pct", type=float, default=0.015)
     parser.add_argument("--stop-pct", type=float, default=0.010)
     parser.add_argument("--max-picks", type=int, default=5)
+    parser.add_argument("--features", type=str, default="v8",
+                        choices=["v8", "v7", "postopen", "swing", "swingf", "xsect"],
+                        help="v8, v7, postopen, swing, swingf, xsect (cross-sectional factors)")
+    parser.add_argument("--cutoff-min", type=int, default=30,
+                        help="Post-open decision cutoff in minutes (postopen mode)")
+    parser.add_argument("--horizon-days", type=int, default=10,
+                        help="Swing holding horizon in trading days (swing mode)")
+    parser.add_argument("--sim", type=str, default="barrier", choices=["barrier", "longshort", "xsect"],
+                        help="Simulation: barrier (long-only), longshort, or xsect (beta-neutral)")
     parser.add_argument("--seed", type=int, default=42)
     return parser.parse_args()
 
@@ -72,10 +86,13 @@ def main():
     output_dir = Path(args.output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
 
-    config = V8Config.default()
+    # Expanding-window walk-forward splits (adaptive: folds with no data are skipped).
+    train_splits = ((2021,), (2021, 2022), (2021, 2022, 2023), (2021, 2022, 2023, 2024))
+    test_splits = ((2022,), (2023,), (2024,), (2025,))
     config = V8Config(
-        target=config.target.__class__(target_pct=args.target_pct, stop_pct=args.stop_pct),
-        portfolio=config.portfolio.__class__(max_picks=args.max_picks),
+        target=TargetConfig(target_pct=args.target_pct, stop_pct=args.stop_pct),
+        portfolio=PortfolioConfig(max_picks=args.max_picks),
+        backtest=BacktestConfig(train_years=train_splits, test_years=test_splits),
     )
 
     # -----------------------------------------------------------------------
@@ -88,30 +105,51 @@ def main():
         return
 
     # -----------------------------------------------------------------------
-    # Load trained models
+    # Classify tiers + build barrier-labeled dataset (features + outcomes)
     # -----------------------------------------------------------------------
-    model_dir = Path(args.model_dir)
-    if not model_dir.exists():
-        print(f"Model directory not found: {model_dir}")
-        print("Run 'python scripts/train_v8.py' first, or use --quick for synthetic test")
+    print(f"\nClassifying tiers ({args.universe})...")
+    tier_report = classify_tiers(args.data_dir, universe=args.universe, verbose=True)
+    symbols = get_universe(args.universe)
+
+    print(f"\nBuilding barrier-labeled dataset ({args.features} features)...")
+    if args.features == "v7":
+        from equity.v8.dataset import build_barrier_dataset_v7
+        dataset = build_barrier_dataset_v7(symbols, args.data_dir, config, tier_report, verbose=True)
+    elif args.features == "postopen":
+        from equity.v8.dataset import build_postopen_dataset
+        dataset = build_postopen_dataset(symbols, args.data_dir, config, tier_report,
+                                         cutoff_min=args.cutoff_min, verbose=True)
+    elif args.features == "swing":
+        from equity.v8.dataset import build_swing_dataset_v7
+        dataset = build_swing_dataset_v7(symbols, args.data_dir, config, tier_report,
+                                         horizon_days=args.horizon_days, verbose=True)
+    elif args.features == "swingf":
+        from equity.v8.dataset import build_swing_factor_dataset
+        dataset = build_swing_factor_dataset(symbols, args.data_dir, config, tier_report,
+                                             horizon_days=args.horizon_days, verbose=True)
+    elif args.features == "xsect":
+        from equity.v8.dataset import build_xsect_factor_dataset
+        dataset = build_xsect_factor_dataset(symbols, args.data_dir, config, tier_report,
+                                             horizon_days=args.horizon_days, verbose=True)
+    else:
+        dataset = build_barrier_dataset(symbols, args.data_dir, config, tier_report, verbose=True)
+    if dataset.empty:
+        print(f"No dataset rows built from {args.data_dir}. Check minute CSV availability.")
         return
+    print(f"Dataset: {len(dataset)} rows, "
+          f"{dataset['date'].min().date()} → {dataset['date'].max().date()}, "
+          f"LONG-target rate {(dataset['long_label'] == 1).mean():.2%}")
 
     # -----------------------------------------------------------------------
-    # Run walk-forward backtest
+    # Run walk-forward backtest (retrains specialists each fold)
     # -----------------------------------------------------------------------
     print(f"\nRunning walk-forward backtest ({args.universe})...")
+    v7_metrics = _load_v7_results(args.compare_v7) if args.compare_v7 else None
 
-    # Load V7 results for comparison
-    v7_metrics = None
-    if args.compare_v7:
-        v7_metrics = _load_v7_results(args.compare_v7)
-
-    wf = WalkForwardBacktest(config, tier_report, output_dir)
+    wf = WalkForwardBacktest(config, tier_report, output_dir, dataset=dataset, sim=args.sim)
     trades, metrics = wf.run(verbose=True)
 
     _print_comparison(metrics, trades, v7_metrics, args)
-
-    # Save final report
     _save_comparison_report(metrics, trades, v7_metrics, output_dir)
 
 

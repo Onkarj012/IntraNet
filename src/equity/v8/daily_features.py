@@ -315,10 +315,12 @@ def _add_volatility_features(features: pd.DataFrame, daily: pd.DataFrame) -> Non
     log_hl_sq = log_hl ** 2
 
     # Parkinson: (1 / (4 * ln(2))) * E[(ln(H/L))^2]
-    parkinson_daily = log_hl_sq / (4.0 * np.log(2.0))
+    parkinson_daily = pd.Series(log_hl_sq / (4.0 * np.log(2.0)), index=daily.index)
 
     # Garman-Klass: more efficient estimator using OHLC
-    gk_daily = 0.5 * log_hl_sq - (2.0 * np.log(2.0) - 1.0) * log_co ** 2
+    gk_daily = pd.Series(
+        0.5 * log_hl_sq - (2.0 * np.log(2.0) - 1.0) * log_co ** 2, index=daily.index
+    )
 
     for window in (5, 21):
         features[f"parkinson_vol_{window}d"] = np.sqrt(

@@ -162,12 +162,21 @@ class WalkForwardBacktest:
         tier_report: UniverseTierReport,
         output_dir: str | Path,
         *,
+        dataset: pd.DataFrame | None = None,
+        cost_model: object | None = None,
+        sim: str = "barrier",
         baseline_trades: pd.DataFrame | None = None,
     ):
         self.config = config
         self.tier_report = tier_report
         self.output_dir = Path(output_dir)
         self.output_dir.mkdir(parents=True, exist_ok=True)
+        self.dataset = dataset
+        self.sim = sim
+        if cost_model is None:
+            from equity.costs import DEFAULT_COSTS
+            cost_model = DEFAULT_COSTS
+        self.cost_model = cost_model
         self.baseline_trades = baseline_trades
 
         # Internal state
@@ -227,11 +236,128 @@ class WalkForwardBacktest:
         test_years: tuple[int, ...],
         verbose: bool,
     ) -> list[TradeRecord]:
-        """Run a single walk-forward fold."""
-        # Placeholder — full implementation in Phase 3-4
-        # For now, returns empty list
-        self._log_event(f"  Fold {fold_idx} placeholder — signal models not yet implemented")
-        return []
+        """Train specialists on train_years, simulate top-N LONG picks over test_years.
+
+        Outcome uses the precomputed path-dependent barrier label:
+          long_label == 1  -> +target_pct  (target hit before stop)
+          long_label == 0  -> -stop_pct     (stop hit first)
+          long_label == -1 -> (close-open)/open  (neither: exit at EOD)
+        Round-trip NSE costs are subtracted per trade.
+        """
+        from .signal_models import SignalModel, MetaEnsemble
+        from .dataset import META_COLS
+
+        if self.dataset is None or self.dataset.empty:
+            self._log_event(f"  Fold {fold_idx}: no dataset provided")
+            return []
+
+        df = self.dataset
+        years = df["date"].dt.year
+        train = df[years.isin(train_years)]
+        test = df[years.isin(test_years)]
+        if len(train) < 500 or test.empty:
+            self._log_event(
+                f"  Fold {fold_idx}: insufficient rows (train={len(train)}, test={len(test)}) — skipped"
+            )
+            return []
+
+        feat_cols = [c for c in df.columns if c not in META_COLS]
+        cut = int(len(train) * 0.85)
+        tr, cal = train.iloc[:cut], train.iloc[cut:]
+        y_tr = (tr["long_label"] == 1).astype(int).values
+        y_cal = (cal["long_label"] == 1).astype(int).values
+
+        models: dict[str, SignalModel] = {}
+        for spec in self.config.signal_models:
+            m = SignalModel(name=spec.name, config=spec)
+            try:
+                m.fit(tr[feat_cols], y_tr, X_val=cal[feat_cols], y_val=y_cal, verbose=False)
+                if len(cal) > 0:
+                    m.calibrate(cal[feat_cols], y_cal, method="isotonic")
+                models[spec.name] = m
+            except Exception as e:
+                self._log_event(f"  [{spec.name}] train failed: {e}")
+        if not models:
+            return []
+
+        # Equal-weight ensemble (regime weights were never learned from data).
+        ensemble = MetaEnsemble(models=models, regime_weights=np.ones((5, 5)) / 5)
+        prob, _ = ensemble.predict(test[feat_cols], regime_id=0)
+        test = test.assign(_prob=prob)
+
+        # Diagnostic: does the score rank the barrier outcome at all, OOS?
+        y_test = (test["long_label"] == 1).astype(int).values
+        try:
+            from sklearn.metrics import roc_auc_score
+            auc = roc_auc_score(y_test, prob) if len(np.unique(y_test)) > 1 else float("nan")
+        except Exception:
+            auc = float("nan")
+        order = np.argsort(prob)
+        d = max(len(prob) // 10, 1)
+        top_wr, bot_wr = y_test[order[-d:]].mean(), y_test[order[:d]].mean()
+
+        tgt = self.config.target
+        n_picks = self.config.portfolio.max_picks
+        trades: list[TradeRecord] = []
+
+        def _mk(r, side, gross, reason):
+            entry = float(r["open_price"])
+            cost_frac = self.cost_model.estimate_round_trip_fraction(entry)
+            pnl_pct = gross - cost_frac
+            return TradeRecord(
+                symbol=str(r["symbol"]), date=pd.Timestamp(r["date"]), side=side,
+                entry_price=entry,
+                target_price=entry * (1 + tgt.target_pct),
+                stop_price=entry * (1 - tgt.stop_pct),
+                exit_price=entry * (1 + (gross if side == "LONG" else -gross)),
+                exit_reason=reason, pnl_pct=pnl_pct, pnl_absolute=pnl_pct * 100000.0,
+                tier=str(r["tier"]), costs=cost_frac * 100000.0,
+                regime="all", confidence=float(r["_prob"]), signal_model="ensemble",
+            )
+
+        if self.sim == "xsect":
+            # Beta-neutral: PnL = market-demeaned excess return of the N-day hold.
+            for _, day in test.groupby("date"):
+                day = day.sort_values("_prob")
+                if len(day) < 2 * n_picks:
+                    continue
+                for _, r in day.tail(n_picks).iterrows():
+                    trades.append(_mk(r, "LONG", float(r["excess_ret"]), "CLOSE_EOD"))
+                for _, r in day.head(n_picks).iterrows():
+                    trades.append(_mk(r, "SHORT", -float(r["excess_ret"]), "CLOSE_EOD"))
+        elif self.sim == "longshort":
+            # Market-neutral: long top-N, short bottom-N, exit at close.
+            for _, day in test.groupby("date"):
+                day = day[day["open_price"] > 0].sort_values("_prob")
+                if len(day) < 2 * n_picks:
+                    continue
+                for _, r in day.tail(n_picks).iterrows():
+                    ret = (float(r["close_price"]) - float(r["open_price"])) / max(float(r["open_price"]), 1e-9)
+                    trades.append(_mk(r, "LONG", ret, "CLOSE_EOD"))
+                for _, r in day.head(n_picks).iterrows():
+                    ret = (float(r["open_price"]) - float(r["close_price"])) / max(float(r["open_price"]), 1e-9)
+                    trades.append(_mk(r, "SHORT", ret, "CLOSE_EOD"))
+        else:
+            # Long-only barrier: top-N by score, exit via path-dependent barrier.
+            for _, day in test.groupby("date"):
+                for _, r in day.nlargest(n_picks, "_prob").iterrows():
+                    if float(r["open_price"]) <= 0:
+                        continue
+                    ll = int(r["long_label"])
+                    if ll == 1:
+                        gross, reason = tgt.target_pct, "TARGET_HIT"
+                    elif ll == 0:
+                        gross, reason = -tgt.stop_pct, "STOP_HIT"
+                    else:
+                        gross = (float(r["close_price"]) - float(r["open_price"])) / max(float(r["open_price"]), 1e-9)
+                        reason = "CLOSE_EOD"
+                    trades.append(_mk(r, "LONG", gross, reason))
+        self._log_event(
+            f"  Fold {fold_idx}: AUC={auc:.3f} top-decile barrier-win={top_wr:.1%} "
+            f"bottom-decile={bot_wr:.1%} | {len(models)} models, train={len(tr)} "
+            f"test_rows={len(test)} trades={len(trades)}"
+        )
+        return trades
 
     def _log_event(self, msg: str) -> None:
         self._log.append(f"[{datetime.now():%Y-%m-%d %H:%M:%S}] {msg}")
