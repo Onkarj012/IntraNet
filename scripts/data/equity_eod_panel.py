@@ -128,11 +128,13 @@ def main():
     vol = pd.DataFrame(vols).reindex_like(close)
     panel = pd.concat({"close": close, "volume": vol}, axis=1)
 
-    if existing is not None and not panel.empty:
-        panel = panel.combine_first(existing)
-        panel.update(panel)  # new values take precedence on overlap
-        panel = pd.concat({"close": panel.xs("close", axis=1, level=0).combine_first(existing.xs("close", axis=1, level=0)),
-                           "volume": panel.xs("volume", axis=1, level=0).combine_first(existing.xs("volume", axis=1, level=0))}, axis=1)
+    if existing is not None:
+        if panel.empty:
+            print("  Update mode: no new rows fetched — keeping existing panel unchanged.")
+            panel = existing
+        else:
+            panel = pd.concat({"close": panel.xs("close", axis=1, level=0).combine_first(existing.xs("close", axis=1, level=0)),
+                               "volume": panel.xs("volume", axis=1, level=0).combine_first(existing.xs("volume", axis=1, level=0))}, axis=1)
 
     out.parent.mkdir(parents=True, exist_ok=True)
     panel.sort_index().to_parquet(out)

@@ -46,7 +46,7 @@ def run(panel_path, *, start, rebalance_days, top_n, min_adv, use_trend):
         turnover = 0.5 * sum(abs(w.get(s, 0) - prev.get(s, 0)) for s in set(w) | set(prev))
         cost = turnover * COST
         equity *= (1 + gross - cost)
-        bench *= (1 + float(fwd.reindex(score.loc[dt].dropna().index).mean()))
+        bench *= (1 + float(fwd.reindex(close.columns[close.loc[dt].notna() & close.loc[nxt].notna()]).mean()))
         prev = w
         rows.append({
             "rebalance_date": dt.date(), "exit_date": nxt.date(), "state": state,
@@ -81,7 +81,7 @@ def main():
     eq = led["equity"]
     sharpe = r.mean() / r.std() * np.sqrt(ppy) if r.std() > 0 else 0.0
     yrs = (pd.Timestamp(led["exit_date"].iloc[-1]) - pd.Timestamp(led["rebalance_date"].iloc[0])).days / 365.25
-    cagr = eq.iloc[-1] ** (1 / yrs) - 1
+    cagr = eq.iloc[-1] ** (1 / yrs) - 1 if yrs > 0 else 0.0
     dd = float((eq / eq.cummax() - 1).min())
     invested = (led["state"] == "invested").mean()
     print(f"\nPaper ledger: {len(led)} rebalances {led['rebalance_date'].iloc[0]} → {led['exit_date'].iloc[-1]}")

@@ -73,7 +73,13 @@ def run(as_of: str | None = None) -> int:
 
     # trading dates available in panel
     tdates = close.index
-    today  = tdates[-1] if as_of is None else tdates[tdates <= pd.Timestamp(as_of)][-1]
+    if as_of is None:
+        today = tdates[-1]
+    else:
+        prior = tdates[tdates <= pd.Timestamp(as_of)]
+        if len(prior) == 0:
+            raise ValueError(f"--date {as_of} is before panel start {tdates[0].date()}")
+        today = prior[-1]
 
     led = _load_ledger()
 
@@ -141,9 +147,14 @@ def run(as_of: str | None = None) -> int:
         last_rebal = pd.Timestamp(led["rebalance_date"].iloc[-1])
         last_w = json.loads(led["holdings"].iloc[-1])
         if last_w and last_rebal in close.index and today in close.index:
-            mtm = sum(wt * float((close.loc[today, s] / close.loc[last_rebal, s]) - 1)
-                      for s, wt in last_w.items() if s in close.columns)
-            print(f"  Open position MTM since {last_rebal.date()}: {mtm*100:+.2f}%")
+            present = {s: wt for s, wt in last_w.items() if s in close.columns}
+            total_w = sum(present.values())
+            if total_w > 0 and present:
+                mtm = sum((wt / total_w) * float((close.loc[today, s] / close.loc[last_rebal, s]) - 1)
+                          for s, wt in present.items())
+                missing = len(last_w) - len(present)
+                note = f" ({missing} symbols missing from panel, weights renormalised)" if missing else ""
+                print(f"  Open position MTM since {last_rebal.date()}: {mtm*100:+.2f}%{note}")
 
     # Halt checks
     if not led.empty:

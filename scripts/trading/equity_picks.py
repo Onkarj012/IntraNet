@@ -14,7 +14,7 @@ from __future__ import annotations
 import argparse
 import json
 import sys
-from datetime import datetime, UTC
+from datetime import datetime, timezone
 from pathlib import Path
 
 import pandas as pd
@@ -31,7 +31,13 @@ def generate(panel_path, as_of=None, *, top_n=M.TOP_N, min_adv=M.MIN_ADV,
     score = M.momentum_score(close)
     v63 = M.vol63(close)
     adv_panel = M.adv(close, vol)
-    date = close.index[-1] if as_of is None else close.index[close.index <= pd.Timestamp(as_of)][-1]
+    if as_of is None:
+        date = close.index[-1]
+    else:
+        prior = close.index[close.index <= pd.Timestamp(as_of)]
+        if len(prior) == 0:
+            raise ValueError(f"as_of {as_of} is before panel start {close.index[0].date()}")
+        date = prior[-1]
 
     weights, state = M.select(date, close, score, v63, adv_panel,
                               top_n=top_n, min_price=min_price, min_adv=min_adv,
@@ -45,7 +51,7 @@ def generate(panel_path, as_of=None, *, top_n=M.TOP_N, min_adv=M.MIN_ADV,
     ]
     return {
         "as_of": str(date.date()),
-        "generated_at": datetime.now(UTC).isoformat(timespec="seconds"),
+        "generated_at": datetime.now(timezone.utc).isoformat(timespec="seconds"),
         "state": state,
         "config": {"top_n": top_n, "min_adv": min_adv, "weight": weight,
                    "trend_filter": use_trend, "rebalance_days": M.REBALANCE_DAYS},

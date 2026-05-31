@@ -58,7 +58,8 @@ def main() -> int:
 
     # 3. Append live ledger
     rc = run("Step 3: Append live paper ledger",
-             [PYTHON, "scripts/trading/equity_paper_trade.py"])
+             [PYTHON, "scripts/trading/equity_paper_trade.py"],
+             abort_on_fail=False)
     if rc == 3:
         return 3  # hard halt — stop here
 

@@ -78,6 +78,8 @@ def select(
     if weight == "invvol":
         iv = (1.0 / v63.loc[date, picks].replace(0, np.nan)).fillna(0.0)
         w = (iv / iv.sum()) if iv.sum() > 0 else pd.Series(1.0 / top_n, index=picks)
-    else:
+    elif weight == "equal":
         w = pd.Series(1.0 / top_n, index=picks)
+    else:
+        raise ValueError(f"Unsupported weight mode: {weight!r}. Use 'invvol' or 'equal'.")
     return {sym: float(w[sym]) for sym in picks}, "invested"

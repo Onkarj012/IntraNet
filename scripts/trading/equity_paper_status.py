@@ -80,24 +80,27 @@ def main() -> int:
     eq    = led["equity"]
 
     # All-time
-    print(f"\n  -- ALL-TIME --")
+    print("\n  -- ALL-TIME --")
     print(_fmt(_metrics(r_all), "All rebalances"))
 
     # Rolling 10-rebal
     if len(led) >= 5:
         r10 = r_all.iloc[-10:]
-        print(f"\n  -- ROLLING LAST 10 REBALANCES (~3 months) --")
+        print("\n  -- ROLLING LAST 10 REBALANCES (~3 months) --")
         print(_fmt(_metrics(r10), "Last 10 rebalances"))
 
     # Per-year
-    print(f"\n  -- PER-YEAR --")
+    print("\n  -- PER-YEAR --")
     print(f"  {'Year':<6} {'Ret%':>8} {'Bench%':>8} {'Excess%':>9} {'Sharpe':>7} {'DD%':>7} {'Invested%':>10}")
     led["year"] = led["rebalance_date"].dt.year
     for y, sub in led.groupby("year"):
         r = sub["net_ret"]
         sh = r.mean()/r.std()*np.sqrt(PPY) if r.std()>0 else 0
         s = (1+r).prod()-1
-        b = sub["bench_equity"].iloc[-1]/sub["bench_equity"].iloc[0]-1
+        idx0 = sub.index[0]
+        prev_pos = led.index.get_loc(idx0) - 1
+        base_bench = led["bench_equity"].iloc[prev_pos] if prev_pos >= 0 else 1.0
+        b = sub["bench_equity"].iloc[-1] / base_bench - 1
         dd = (sub["equity"]/sub["equity"].cummax()-1).min()
         inv = (sub["state"]=="invested").mean()
         print(f"  {y:<6} {s*100:>8.1f} {b*100:>8.1f} {(s-b)*100:>+9.1f} "
@@ -115,7 +118,7 @@ def main() -> int:
             print(f"    ... +{len(last_w)-8} more")
 
     # Halt checks
-    print(f"\n  -- HALT CHECKS --")
+    print("\n  -- HALT CHECKS --")
     soft_triggered = False
     rc = 0
 
