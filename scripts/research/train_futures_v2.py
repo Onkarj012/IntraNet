@@ -28,15 +28,16 @@ import pandas as pd
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(PROJECT_ROOT / "src"))
+sys.path.insert(0, str(PROJECT_ROOT / "scripts" / "research"))
 
 from engine.features import FUTURES_FEATURES, add_regime
-from scripts.research.backtest_futures import (
+from backtest_futures import (
     COSTS_INR, DAILY_HALT, ENTRY_MIN, HARD_CUTOFF, HIGH_CONF_PCT,
     HORIZON, INTRADAY_CUM_HALT, LOT, MAX_TRADES, SIGNAL_PCT,
     SKIP_END, SKIP_REGIMES, SKIP_START, STOP_FLOOR, STOP_PCT,
     TARGET_PCT, VIX_SPIKE_PCT, VIX_PATH,
     _load_fut_bars_cache, load_vix_prior, metrics, print_row,
-    run_backtest, simulate_trade,
+    run_backtest,
 )
 
 FEAT_PATH  = PROJECT_ROOT / "cache/router_v0/futures_features.parquet"
