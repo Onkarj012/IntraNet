@@ -25,7 +25,9 @@ function resolveRepoRoot(): string {
 const REPO_ROOT = resolveRepoRoot();
 
 // e.g. https://<deployment>.convex.site  (HTTP-action origin, not .convex.cloud)
-const CONVEX = process.env.CONVEX_HTTP_URL?.replace(/\/$/, "");
+const CONVEX = (
+  process.env.CONVEX_HTTP_URL ?? process.env.NEXT_PUBLIC_CONVEX_SITE_URL
+)?.replace(/\/$/, "");
 const READ_SECRET = process.env.DASHBOARD_PUSH_SECRET;
 
 export const CLOUD = !!CONVEX;

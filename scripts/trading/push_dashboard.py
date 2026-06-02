@@ -1,9 +1,10 @@
 #!/usr/bin/env python3
 """Push dashboard artifacts to Convex so the hosted dashboard reads live data.
 
-Reads from .env / environment:
-  CONVEX_HTTP_URL        https://<deployment>.convex.site
-  DASHBOARD_PUSH_SECRET  shared secret (must equal the Convex PUSH_SECRET env)
+Reads from repo .env, dashboard/.env.local, or environment:
+  CONVEX_HTTP_URL              https://<deployment>.convex.site
+  NEXT_PUBLIC_CONVEX_SITE_URL  same URL (fallback from dashboard/.env.local)
+  DASHBOARD_PUSH_SECRET        shared secret (must equal Convex PUSH_SECRET)
 
 Safe no-op (exit 0) when CONVEX_HTTP_URL is unset, so it can sit at the tail of
 the daily cron chain without affecting local-only setups.
@@ -31,18 +32,31 @@ STATIC = [
 ]
 
 
-def load_env() -> None:
-    env = ROOT / ".env"
-    if not env.exists():
+def _load_env_file(path: Path, *, override: bool = False) -> None:
+    if not path.exists():
         return
-    for line in env.read_text().splitlines():
+    for line in path.read_text().splitlines():
         line = line.strip()
         if line and not line.startswith("#") and "=" in line:
             k, v = line.split("=", 1)
             v = v.strip()
             if len(v) >= 2 and v[0] == v[-1] and v[0] in "\"'":
                 v = v[1:-1]
-            os.environ.setdefault(k.strip(), v)
+            key = k.strip()
+            if override:
+                os.environ[key] = v
+            else:
+                os.environ.setdefault(key, v)
+
+
+def load_env() -> None:
+    """Repo .env first, then dashboard/.env.local (overrides Convex/push vars)."""
+    _load_env_file(ROOT / ".env")
+    _load_env_file(ROOT / "dashboard" / ".env.local", override=True)
+    # Next/Vercel name; push + source.ts use CONVEX_HTTP_URL (.convex.site)
+    site = os.environ.get("NEXT_PUBLIC_CONVEX_SITE_URL", "").rstrip("/")
+    if site:
+        os.environ.setdefault("CONVEX_HTTP_URL", site)
 
 
 def latest(pattern: str) -> str | None:
@@ -53,7 +67,7 @@ def latest(pattern: str) -> str | None:
 def main() -> int:
     load_env()
     base = os.environ.get("CONVEX_HTTP_URL", "").rstrip("/")
-    secret = os.environ.get("DASHBOARD_PUSH_SECRET")
+    secret = (os.environ.get("DASHBOARD_PUSH_SECRET") or os.environ.get("PUSH_SECRET") or "").strip()
     if not base:
         print("  CONVEX_HTTP_URL unset — skipping dashboard push")
         return 0

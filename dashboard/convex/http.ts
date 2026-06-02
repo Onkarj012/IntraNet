@@ -4,17 +4,21 @@ import { internal } from "./_generated/api";
 
 const http = httpRouter();
 
-// Pipeline → Convex. Auth via the PUSH_SECRET Convex env var.
+function pushSecret(): string | undefined {
+  return process.env.PUSH_SECRET ?? process.env.DASHBOARD_PUSH_SECRET;
+}
+
+// Pipeline → Convex. Auth via PUSH_SECRET or DASHBOARD_PUSH_SECRET on the deployment.
 http.route({
   path: "/push",
   method: "POST",
   handler: httpAction(async (ctx, request) => {
-    const secret = process.env.PUSH_SECRET;
+    const secret = pushSecret();
     if (!secret || request.headers.get("Authorization") !== `Bearer ${secret}`)
       return new Response("unauthorized", { status: 401 });
-    let body: { key?: unknown; content?: unknown };
+    let body: { key?: unknown; content?: unknown } = {};
     try {
-      body = await request.json();
+      body = (await request.json()) as { key?: unknown; content?: unknown };
     } catch {
       return new Response("bad json", { status: 400 });
     }
@@ -30,7 +34,7 @@ http.route({
   path: "/file",
   method: "GET",
   handler: httpAction(async (ctx, request) => {
-    const secret = process.env.PUSH_SECRET;
+    const secret = pushSecret();
     if (!secret || request.headers.get("Authorization") !== `Bearer ${secret}`)
       return new Response("unauthorized", { status: 401 });
     const key = new URL(request.url).searchParams.get("key");
