@@ -28,9 +28,33 @@ const REPO_ROOT = resolveRepoRoot();
 const CONVEX = (
   process.env.CONVEX_HTTP_URL ?? process.env.NEXT_PUBLIC_CONVEX_SITE_URL
 )?.replace(/\/$/, "");
-const READ_SECRET = process.env.DASHBOARD_PUSH_SECRET;
+// Server-only on Vercel (never NEXT_PUBLIC_* — do not expose to the browser).
+const READ_SECRET =
+  process.env.DASHBOARD_PUSH_SECRET?.trim() ||
+  process.env.PUSH_SECRET?.trim() ||
+  "";
 
 export const CLOUD = !!CONVEX;
+
+export type ConvexProbe = "ok" | "no-secret" | "unauthorized" | "missing" | "offline";
+
+/** Quick health check for hosted misconfiguration (used in layout banner). */
+export async function probeConvex(): Promise<ConvexProbe> {
+  if (!CONVEX) return "offline";
+  if (!READ_SECRET) return "no-secret";
+  try {
+    const r = await fetch(
+      `${CONVEX}/file?key=${encodeURIComponent("results/recommendations.json")}`,
+      { cache: "no-store", headers: { Authorization: `Bearer ${READ_SECRET}` } },
+    );
+    if (r.status === 401) return "unauthorized";
+    if (!r.ok) return "offline";
+    const t = await r.text();
+    return t ? "ok" : "missing";
+  } catch {
+    return "offline";
+  }
+}
 
 const p = (rel: string) => path.join(REPO_ROOT, rel);
 
@@ -75,13 +99,25 @@ function localText(key: string): string | null {
 }
 
 async function convexText(key: string): Promise<string | null> {
-  if (!READ_SECRET) return null;
+  if (!READ_SECRET) {
+    if (process.env.NODE_ENV === "development") {
+      console.warn(
+        "[source] CONVEX_HTTP_URL is set but DASHBOARD_PUSH_SECRET (or PUSH_SECRET) is missing — hosted reads disabled",
+      );
+    }
+    return null;
+  }
   try {
     const r = await fetch(`${CONVEX}/file?key=${encodeURIComponent(key)}`, {
       cache: "no-store",
       headers: { Authorization: `Bearer ${READ_SECRET}` },
     });
-    if (!r.ok) return null;
+    if (!r.ok) {
+      if (process.env.NODE_ENV === "development" && r.status === 401) {
+        console.warn(`[source] Convex GET ${key} → 401 (secret mismatch?)`);
+      }
+      return null;
+    }
     const t = await r.text();
     return t === "" ? null : t;
   } catch {

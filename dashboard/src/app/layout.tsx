@@ -2,6 +2,7 @@ import type { Metadata, Viewport } from "next";
 import { Inter } from "next/font/google";
 import Nav from "@/components/Nav";
 import BottomNav from "@/components/BottomNav";
+import DataSourceBanner from "@/components/DataSourceBanner";
 import "./globals.css";
 
 const inter = Inter({
@@ -14,6 +15,10 @@ export const metadata: Metadata = {
   title: "OptiNet — Trading Control",
   description:
     "Live-testing control room for the NIFTY futures router and IntradayNet equity systems.",
+  icons: {
+    icon: [{ url: "/favicon.svg", type: "image/svg+xml" }],
+    shortcut: "/favicon.svg",
+  },
 };
 
 export const viewport: Viewport = {
@@ -35,6 +40,7 @@ export default function RootLayout({
         <div className="glow-violet pointer-events-none absolute inset-x-0 top-0 -z-10 h-[420px]" />
         <Nav />
         <main className="mx-auto w-full max-w-[1180px] px-4 pb-28 pt-8 sm:px-6 md:pb-24">
+          <DataSourceBanner />
           {children}
         </main>
         <BottomNav />
