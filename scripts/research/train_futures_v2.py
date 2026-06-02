@@ -28,15 +28,16 @@ import pandas as pd
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(PROJECT_ROOT / "src"))
+sys.path.insert(0, str(PROJECT_ROOT / "scripts" / "research"))
 
 from engine.features import FUTURES_FEATURES, add_regime
-from scripts.research.backtest_futures import (
+from backtest_futures import (
     COSTS_INR, DAILY_HALT, ENTRY_MIN, HARD_CUTOFF, HIGH_CONF_PCT,
     HORIZON, INTRADAY_CUM_HALT, LOT, MAX_TRADES, SIGNAL_PCT,
     SKIP_END, SKIP_REGIMES, SKIP_START, STOP_FLOOR, STOP_PCT,
     TARGET_PCT, VIX_SPIKE_PCT, VIX_PATH,
     _load_fut_bars_cache, load_vix_prior, metrics, print_row,
-    run_backtest, simulate_trade,
+    run_backtest,
 )
 
 FEAT_PATH  = PROJECT_ROOT / "cache/router_v0/futures_features.parquet"
@@ -270,10 +271,10 @@ def main() -> int:
     val_sharpe_v2 = m_val.get("sharpe_daily_ann", 0.0)
     val_sharpe_v1 = m_val_v1.get("sharpe_daily_ann", 0.0)
     if val_sharpe_v2 > val_sharpe_v1 and val_sharpe_v2 > 1.0:
-        print(f"  ✅ PROMOTE v2: val Sharpe {val_sharpe_v2:.2f} > v1 {val_sharpe_v1:.2f}")
-        print(f"     Use final_long_v2.lgb for paper trading")
+        print(f"  v2 val Sharpe {val_sharpe_v2:.2f} > v1 {val_sharpe_v1:.2f} — research only")
+        print(f"     Do NOT promote: final_long.lgb remains production (v2 saved as final_long_v2.lgb)")
     else:
-        print(f"  ⚠️  KEEP v1: v2 val Sharpe {val_sharpe_v2:.2f} did not beat v1 {val_sharpe_v1:.2f}")
+        print(f"  KEEP v1: v2 val Sharpe {val_sharpe_v2:.2f} did not beat v1 {val_sharpe_v1:.2f}")
         print(f"     final_long.lgb remains the production model")
 
     return 0

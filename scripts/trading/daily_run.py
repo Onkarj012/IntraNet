@@ -25,6 +25,7 @@ Cron (18:00 IST Mon-Fri, after NSE publishes EOD data):
 """
 from __future__ import annotations
 
+import json
 import subprocess
 import sys
 from pathlib import Path
@@ -34,6 +35,26 @@ import pandas as pd
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 VENV_PYTHON = PROJECT_ROOT / ".venv/bin/python"
 PYTHON = str(VENV_PYTHON) if VENV_PYTHON.exists() else sys.executable
+
+STATUS_PATH = PROJECT_ROOT / "results/daily_run_status.json"
+FUT_HALT = PROJECT_ROOT / "results/router_v0/PAPER_TRADING_HALTED"
+EQ_HALT = PROJECT_ROOT / "results/equity/EQUITY_PAPER_HALTED"
+
+
+def write_status(steps: list[dict], exit_code: int) -> None:
+    """Consolidated machine-readable status for the monitoring dashboard."""
+    now = pd.Timestamp.now(tz="Asia/Kolkata")
+    STATUS_PATH.parent.mkdir(parents=True, exist_ok=True)
+    STATUS_PATH.write_text(json.dumps({
+        "run_timestamp": now.isoformat(timespec="seconds"),
+        "date": str(now.date()),
+        "steps": steps,
+        "exit_code": exit_code,
+        "ok": exit_code == 0,
+        "futures_halted": FUT_HALT.exists(),
+        "equity_halted": EQ_HALT.exists(),
+    }, indent=2))
+    print(f"\n  status written → {STATUS_PATH}")
 
 
 def run(label: str, cmd: list[str]) -> int:
@@ -48,28 +69,38 @@ def run(label: str, cmd: list[str]) -> int:
 
 def main() -> int:
     print(f"\n  daily_run  {pd.Timestamp.now(tz='Asia/Kolkata').isoformat(timespec='seconds')}")
+    steps: list[dict] = []
+
+    def record(label: str, rc: int) -> int:
+        steps.append({"label": label, "return_code": rc, "ok": rc == 0})
+        return rc
 
     # 1. EOD data cache (needs KITE_ACCESS_TOKEN set in .env)
-    rc = run("Step 1: EOD data cache (NIFTY bars + VIX)",
-             [PYTHON, "scripts/data/kite_eod_cache.py"])
+    rc = record("EOD data cache", run("Step 1: EOD data cache (NIFTY bars + VIX)",
+                                       [PYTHON, "scripts/data/kite_eod_cache.py"]))
     if rc != 0:
         print("\n  ABORT: EOD cache failed — skipping paper run")
+        write_status(steps, rc)
         return rc
 
     # 2. Paper trading ops (Variant A + C + status + halt checks)
     # paper_ops.py already passes --write-halt to paper_status.py internally
-    rc = run("Step 2: Futures paper trading ops",
-             [PYTHON, "scripts/trading/paper_ops.py", "--auto"])
-    # futures halt is non-blocking for equity — equity runs independently
-    futures_rc = rc
+    futures_rc = record("Futures paper ops", run("Step 2: Futures paper trading ops",
+                                                 [PYTHON, "scripts/trading/paper_ops.py", "--auto"]))
 
     # 3. Equity momentum ops (panel update → picks → ledger → status)
-    rc = run("Step 3: Equity momentum ops",
-             [PYTHON, "scripts/trading/equity_ops.py"])
-    equity_rc = rc
+    # futures halt is non-blocking for equity — equity runs independently
+    equity_rc = record("Equity momentum ops", run("Step 3: Equity momentum ops",
+                                                  [PYTHON, "scripts/trading/equity_ops.py"]))
 
-    # Return worst exit code (3 > 2 > 0)
-    return max(futures_rc, equity_rc)
+    # Worst exit code (3 hard halt > 2 soft halt > 0 ok)
+    exit_code = max(futures_rc, equity_rc)
+    write_status(steps, exit_code)
+
+    # 4. Push artifacts to the hosted dashboard (no-op if CONVEX_HTTP_URL unset).
+    #    Best-effort: a push failure never changes the trading exit code.
+    run("Step 4: Push dashboard snapshot", [PYTHON, "scripts/trading/push_dashboard.py"])
+    return exit_code
 
 
 if __name__ == "__main__":
