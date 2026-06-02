@@ -8,9 +8,7 @@ export async function GET() {
   try {
     return NextResponse.json(await getRecommendationsPayload());
   } catch (e) {
-    return NextResponse.json(
-      { error: e instanceof Error ? e.message : "failed to read recommendations" },
-      { status: 500 },
-    );
+    console.error("GET /api/recommendations failed:", e);
+    return NextResponse.json({ error: "failed to read recommendations" }, { status: 500 });
   }
 }
