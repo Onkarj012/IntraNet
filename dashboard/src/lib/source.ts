@@ -5,13 +5,28 @@
 // only the raw-bytes source changes here.
 import fs from "node:fs";
 import path from "node:path";
+import { fileURLToPath } from "node:url";
 
-const REPO_ROOT = process.env.REPO_ROOT
-  ? path.resolve(process.env.REPO_ROOT)
-  : path.resolve(process.cwd(), "..");
+const REPO_MARKER = "scripts/trading/daily_run.py";
+
+function resolveRepoRoot(): string {
+  if (process.env.REPO_ROOT) return path.resolve(process.env.REPO_ROOT);
+  const candidates = [
+    path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../../.."),
+    process.cwd(),
+    path.resolve(process.cwd(), ".."),
+  ];
+  for (const root of candidates) {
+    if (fs.existsSync(path.join(root, REPO_MARKER))) return root;
+  }
+  return candidates[0];
+}
+
+const REPO_ROOT = resolveRepoRoot();
 
 // e.g. https://<deployment>.convex.site  (HTTP-action origin, not .convex.cloud)
 const CONVEX = process.env.CONVEX_HTTP_URL?.replace(/\/$/, "");
+const READ_SECRET = process.env.DASHBOARD_PUSH_SECRET;
 
 export const CLOUD = !!CONVEX;
 
@@ -58,9 +73,11 @@ function localText(key: string): string | null {
 }
 
 async function convexText(key: string): Promise<string | null> {
+  if (!READ_SECRET) return null;
   try {
     const r = await fetch(`${CONVEX}/file?key=${encodeURIComponent(key)}`, {
       cache: "no-store",
+      headers: { Authorization: `Bearer ${READ_SECRET}` },
     });
     if (!r.ok) return null;
     const t = await r.text();

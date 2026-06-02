@@ -7,7 +7,7 @@ export type Metrics = {
   totalPnl: number;
   meanPnl: number;
   sharpe: number;
-  profitFactor: number; // Infinity encoded as a large number / null-safe on client
+  profitFactor: number | null; // null = no losing trades (display as ∞)
   maxDrawdown: number;
 };
 

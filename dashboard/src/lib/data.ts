@@ -122,7 +122,8 @@ function metrics(trades: Trade[]): Metrics {
     totalPnl: total,
     meanPnl: total / pnls.length,
     sharpe,
-    profitFactor: gl > 0 ? gw / gl : Infinity,
+    // null = no losing trades (infinite PF); JSON cannot represent Infinity.
+    profitFactor: gl > 0 ? gw / gl : gw > 0 ? null : 0,
     maxDrawdown: maxDd,
   };
 }

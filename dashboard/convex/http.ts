@@ -25,11 +25,14 @@ http.route({
   }),
 });
 
-// Dashboard ← Convex (server-to-server read; no CORS needed).
+// Dashboard ← Convex (server-to-server read; same PUSH_SECRET as /push).
 http.route({
   path: "/file",
   method: "GET",
   handler: httpAction(async (ctx, request) => {
+    const secret = process.env.PUSH_SECRET;
+    if (!secret || request.headers.get("Authorization") !== `Bearer ${secret}`)
+      return new Response("unauthorized", { status: 401 });
     const key = new URL(request.url).searchParams.get("key");
     if (!key) return new Response("", { status: 400 });
     const content = await ctx.runQuery(api.files.get, { key });

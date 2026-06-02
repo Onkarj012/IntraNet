@@ -22,8 +22,12 @@ export function pct(v: number, digits = 1, opts: { sign?: boolean } = {}): strin
   return `${sign}${(v * 100).toFixed(digits)}%`;
 }
 
-export function num(v: number, digits = 2, opts: { sign?: boolean } = {}): string {
-  if (!Number.isFinite(v)) return "∞";
+export function num(
+  v: number | null | undefined,
+  digits = 2,
+  opts: { sign?: boolean } = {},
+): string {
+  if (v == null || !Number.isFinite(v)) return "∞";
   const sign = opts.sign && v > 0 ? "+" : "";
   return `${sign}${v.toFixed(digits)}`;
 }
