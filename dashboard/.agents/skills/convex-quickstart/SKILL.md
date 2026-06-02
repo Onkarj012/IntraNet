@@ -158,7 +158,7 @@ Vite apps serve on `http://localhost:5173`, Next.js on `http://localhost:3000`.
 
 After scaffolding, the project structure looks like:
 
-```
+```text
 my-app/
   convex/           # Backend functions and schema
     _generated/     # Auto-generated types (check this into git)

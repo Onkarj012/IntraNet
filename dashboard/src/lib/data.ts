@@ -321,10 +321,10 @@ export async function getEquityPayload(): Promise<EquityPayload> {
         latestHoldings = Object.entries(obj)
           .map(([symbol, weight]) => ({ symbol, weight }))
           .sort((a, b) => b.weight - a.weight);
+        break;
       } catch {
-        /* ignore */
+        /* try older rebalance */
       }
-      break;
     }
   }
 
@@ -411,7 +411,7 @@ async function lastRunFromOpsReport(): Promise<OpsPayload["lastRun"]> {
     ok: s.return_code === 0,
   }));
   const date = String(j.run_timestamp ?? "").slice(0, 10);
-  const exitCode = steps.reduce((m, s) => Math.max(m, s.returnCode), 0);
+  const exitCode = steps.find((s) => s.returnCode !== 0)?.returnCode ?? 0;
   return { source: "ops_report", timestamp: j.run_timestamp, date, steps, exitCode, ranToday: date === istToday() };
 }
 

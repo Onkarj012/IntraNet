@@ -18,7 +18,7 @@ export default async function RecommendationsPage() {
 
   const cols: Column<RecPick>[] = [
     { key: "sym", header: "Symbol", render: (r) => (
-      <Link href={`/recommendations/${r.symbol}`} className="font-semibold text-ink hover:text-accent">{r.symbol}</Link>
+      <Link href={`/recommendations/${encodeURIComponent(r.symbol)}`} className="font-semibold text-ink hover:text-accent">{r.symbol}</Link>
     ) },
     { key: "entry", header: "Entry", align: "right", render: (r) => price(r.entry) },
     { key: "cur", header: "Current", align: "right", render: (r) => price(r.current) },
@@ -27,7 +27,7 @@ export default async function RecommendationsPage() {
     { key: "roi", header: "ROI", align: "right", render: (r) => <span className="text-up">{r.roi == null ? "—" : pct(r.roi, 1, { sign: true })}</span> },
     { key: "rr", header: "R:R", align: "right", render: (r) => (r.rr == null ? "—" : `${num(r.rr, 2)}`) },
     { key: "conf", header: "Conf", align: "right", render: (r) => <span className={confCls(r.confidence)}>{r.confidence == null ? "—" : `${r.confidence}%`}</span> },
-    { key: "go", header: "", align: "right", render: (r) => <Link href={`/recommendations/${r.symbol}`} className="text-ink-60 hover:text-accent">›</Link> },
+    { key: "go", header: "", align: "right", render: (r) => <Link href={`/recommendations/${encodeURIComponent(r.symbol)}`} className="text-ink-60 hover:text-accent">›</Link> },
   ];
 
   return (
@@ -49,7 +49,7 @@ export default async function RecommendationsPage() {
             <div className="mt-7 flex flex-wrap items-center gap-3">
               {d.hasData ? <StatusPill tone="up" pulse>RECOMMENDATIONS READY</StatusPill> : <StatusPill tone="warn">AWAITING MORNING RUN</StatusPill>}
               {d.generatedAt && <span className="text-[12px] text-ink-60">generated {d.generatedAt}</span>}
-              <AutoRefresh generatedAt={d.generatedAt || new Date().toISOString()} />
+              <AutoRefresh generatedAt={d.generatedAt} />
             </div>
           </div>
 
@@ -105,7 +105,7 @@ export default async function RecommendationsPage() {
         />
         <Panel variant="shell" radius="shell" className="p-6 sm:p-7">
           {eq && eq.items.length ? (
-            <DataTable columns={cols} rows={eq.items} />
+            <DataTable columns={cols} rows={eq.items} rowKey={(r) => r.symbol} />
           ) : (
             <p className="text-[13px] text-muted">
               {eq ? "Risk-off — hold cash, no eligible names today." : "No equity picks yet. Run morning_run.py to generate them."}

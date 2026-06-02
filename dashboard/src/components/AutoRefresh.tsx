@@ -7,7 +7,7 @@ export default function AutoRefresh({
   generatedAt,
   seconds = 30,
 }: {
-  generatedAt: string;
+  generatedAt?: string | null;
   seconds?: number;
 }) {
   const router = useRouter();
@@ -27,8 +27,13 @@ export default function AutoRefresh({
     return () => clearInterval(id);
   }, [auto, seconds, router]);
 
-  const ago = Math.max(0, Math.round((Date.now() - new Date(generatedAt).getTime()) / 1000));
-  const agoLabel = ago < 60 ? `${ago}s ago` : `${Math.round(ago / 60)}m ago`;
+  const ts = generatedAt ? new Date(generatedAt).getTime() : NaN;
+  const agoLabel = Number.isFinite(ts)
+    ? (() => {
+        const ago = Math.max(0, Math.round((Date.now() - ts) / 1000));
+        return ago < 60 ? `${ago}s ago` : `${Math.round(ago / 60)}m ago`;
+      })()
+    : "stale";
 
   return (
     <div className="flex items-center gap-3 text-[12px] text-ink-60">

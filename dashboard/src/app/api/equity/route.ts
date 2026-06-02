@@ -8,9 +8,7 @@ export async function GET() {
   try {
     return NextResponse.json(await getEquityPayload());
   } catch (e) {
-    return NextResponse.json(
-      { error: e instanceof Error ? e.message : "failed to read equity data" },
-      { status: 500 },
-    );
+    console.error("GET /api/equity failed:", e);
+    return NextResponse.json({ error: "failed to read equity data" }, { status: 500 });
   }
 }

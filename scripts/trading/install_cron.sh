@@ -19,8 +19,8 @@ mkdir -p "$ROOT/logs" "$ROOT/results"
 ts="$(date +%Y%m%d_%H%M%S)"
 crontab -l 2>/dev/null > "$ROOT/logs/crontab.backup.$ts" || true
 
-# Drop any existing entries for our two scripts
-existing="$(crontab -l 2>/dev/null | grep -vE 'morning_run\.py|daily_run\.py' || true)"
+# Drop any existing entries for our two scripts (and prior CRON_TZ line)
+existing="$(crontab -l 2>/dev/null | grep -vE 'morning_run\.py|daily_run\.py|^CRON_TZ=' || true)"
 
 if [ "${1:-}" = "--remove" ]; then
   printf '%s\n' "$existing" | grep -v '^$' | crontab - || crontab -r 2>/dev/null || true
@@ -37,10 +37,11 @@ human() { # "M H * * D" -> "HH:MM IST · days"
 
 L1="$MORNING_SCHED  cd $ROOT && $PY scripts/trading/morning_run.py >> $ROOT/logs/morning_run.log 2>&1"
 L2="$EVENING_SCHED  cd $ROOT && $PY scripts/trading/daily_run.py >> $ROOT/logs/daily_run.log 2>&1"
-printf '%s\n%s\n%s\n' "$existing" "$L1" "$L2" | grep -v '^$' | crontab -
+printf '%s\n%s\n%s\n%s\n' "CRON_TZ=Asia/Kolkata" "$existing" "$L1" "$L2" | grep -v '^$' | crontab -
 
 cat > "$ROOT/results/cron_status.json" <<JSON
 {
+  "timezone": "Asia/Kolkata",
   "jobs": [
     { "name": "Morning · recommendations", "schedule": "$MORNING_SCHED", "human": "$(human "$MORNING_SCHED")", "entrypoint": "scripts/trading/morning_run.py", "log": "logs/morning_run.log" },
     { "name": "Evening · paper trading", "schedule": "$EVENING_SCHED", "human": "$(human "$EVENING_SCHED")", "entrypoint": "scripts/trading/daily_run.py", "log": "logs/daily_run.log" }

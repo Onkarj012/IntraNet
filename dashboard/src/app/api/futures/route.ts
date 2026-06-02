@@ -8,9 +8,7 @@ export async function GET() {
   try {
     return NextResponse.json(await getFuturesPayload());
   } catch (e) {
-    return NextResponse.json(
-      { error: e instanceof Error ? e.message : "failed to read futures data" },
-      { status: 500 },
-    );
+    console.error("GET /api/futures failed:", e);
+    return NextResponse.json({ error: "failed to read futures data" }, { status: 500 });
   }
 }

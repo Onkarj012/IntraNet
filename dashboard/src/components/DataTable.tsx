@@ -9,20 +9,25 @@ export type Column<T> = {
 export default function DataTable<T>({
   columns,
   rows,
+  rowKey,
 }: {
   columns: Column<T>[];
   rows: T[];
+  rowKey?: (row: T) => string;
 }) {
+  if (!columns?.length) return null;
+
   const title = columns[0];
   const actions = columns.slice(1).filter((c) => c.header === "");
   const fields = columns.slice(1).filter((c) => c.header !== "");
+  const keyOf = (row: T, i: number) => rowKey?.(row) ?? String(i);
 
   return (
     <>
       {/* Mobile: stacked cards */}
       <div className="flex flex-col gap-3 md:hidden">
         {rows.map((row, i) => (
-          <div key={i} className="rounded-card border border-hair bg-raised/40 p-4">
+          <div key={keyOf(row, i)} className="rounded-card border border-hair bg-raised/40 p-4">
             <div className="mb-3 flex items-center justify-between gap-3">
               <div className="nums text-[15px] font-semibold text-ink">{title.render(row)}</div>
               <div className="flex items-center gap-3">{actions.map((c) => <span key={c.key}>{c.render(row)}</span>)}</div>
@@ -58,7 +63,7 @@ export default function DataTable<T>({
           </thead>
           <tbody>
             {rows.map((row, i) => (
-              <tr key={i} className="group transition-colors hover:bg-raised/50">
+              <tr key={keyOf(row, i)} className="group transition-colors hover:bg-raised/50">
                 {columns.map((c) => (
                   <td
                     key={c.key}

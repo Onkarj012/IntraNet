@@ -28,7 +28,10 @@ export default function BottomNav() {
     >
       <ul className="grid grid-cols-5">
         {tabs.map((t) => {
-          const active = t.href === "/" ? pathname === "/" : pathname.startsWith(t.href);
+          const active =
+            t.href === "/"
+              ? pathname === "/"
+              : pathname === t.href || pathname.startsWith(`${t.href}/`);
           return (
             <li key={t.href}>
               <Link

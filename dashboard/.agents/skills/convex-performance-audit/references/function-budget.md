@@ -187,9 +187,10 @@ export const list = query({
 
 ### 6. Replace `ctx.runQuery` and `ctx.runMutation` with helper functions
 
-Inside queries and mutations, `ctx.runQuery` and `ctx.runMutation` have overhead
-compared to calling a plain TypeScript helper function. They run in the same
-transaction but pay extra per-call cost.
+Inside Convex queries and mutations, `ctx.runQuery` and `ctx.runMutation` add
+overhead (argument/return validation and an isolated JS context) compared to
+calling a plain TypeScript helper in the same function. Prefer helpers when
+composing logic within one query or mutation.
 
 ```ts
 // Bad: unnecessary overhead from ctx.runQuery inside a mutation
@@ -211,8 +212,9 @@ export const createProject = mutation({
 });
 ```
 
-Exception: components require `ctx.runQuery`/`ctx.runMutation`. Use them there,
-but prefer helpers everywhere else.
+React components use `convex/react` hooks (`useQuery`, `useMutation`) for the
+client. `ctx.runQuery` / `ctx.runMutation` are backend mechanisms for composing
+within Convex functions — not for React components.
 
 ### 7. Avoid unnecessary `runAction` calls
 

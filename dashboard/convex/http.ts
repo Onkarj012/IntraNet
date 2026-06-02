@@ -1,6 +1,6 @@
 import { httpRouter } from "convex/server";
 import { httpAction } from "./_generated/server";
-import { internal, api } from "./_generated/api";
+import { internal } from "./_generated/api";
 
 const http = httpRouter();
 
@@ -35,7 +35,7 @@ http.route({
       return new Response("unauthorized", { status: 401 });
     const key = new URL(request.url).searchParams.get("key");
     if (!key) return new Response("", { status: 400 });
-    const content = await ctx.runQuery(api.files.get, { key });
+    const content = await ctx.runQuery(internal.files.get, { key });
     return new Response(content ?? "", {
       headers: { "content-type": "text/plain; charset=utf-8" },
     });

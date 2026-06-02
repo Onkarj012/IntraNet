@@ -112,7 +112,7 @@ def futures_plan() -> dict | None:
         nif = pd.read_csv(ROOT / "data/nifty_intraday/NIFTY 50_minute.csv", usecols=["date", "close"])
         daily = nif.groupby(pd.to_datetime(nif["date"]).dt.date)["close"].last()
         entry = float(daily.iloc[-1])
-        ret5d = float(daily.iloc[-1] / daily.iloc[-6] - 1) if len(daily) > 6 else None
+        ret5d = float(daily.iloc[-1] / daily.iloc[-6] - 1) if len(daily) >= 6 else None
     except Exception as e:  # noqa: BLE001
         print(f"  futures plan skipped: {e}", file=sys.stderr)
         return None
@@ -143,9 +143,13 @@ def futures_plan() -> dict | None:
 def main() -> int:
     print(f"\n  morning_run  {pd.Timestamp.now(tz='Asia/Kolkata').isoformat(timespec='seconds')}")
 
-    run("Step 1: Update adjusted EOD panel",
-        [PYTHON, "scripts/data/equity_eod_panel.py", "--universe", "nifty500", "--update"])
-    run("Step 2: Generate equity picks", [PYTHON, "scripts/trading/equity_picks.py"])
+    rc = run("Step 1: Update adjusted EOD panel",
+             [PYTHON, "scripts/data/equity_eod_panel.py", "--universe", "nifty500", "--update"])
+    if rc != 0:
+        return rc
+    rc = run("Step 2: Generate equity picks", [PYTHON, "scripts/trading/equity_picks.py"])
+    if rc != 0:
+        return rc
 
     picks = latest_picks()
     equity = None

@@ -8,9 +8,7 @@ export async function GET() {
   try {
     return NextResponse.json(await getOpsPayload());
   } catch (e) {
-    return NextResponse.json(
-      { error: e instanceof Error ? e.message : "failed to read ops data" },
-      { status: 500 },
-    );
+    console.error("GET /api/ops failed:", e);
+    return NextResponse.json({ error: "failed to read ops data" }, { status: 500 });
   }
 }

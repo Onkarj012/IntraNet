@@ -43,11 +43,11 @@ Do this especially for:
 
 ## 1. Push Filters To Storage
 
-Both JavaScript `.filter()` and the Convex query `.filter()` method after a DB
-scan mean you already paid for the read. The Convex `.filter()` method has the
-same performance as filtering in JS, it does not push the predicate to the
-storage layer. Only `.withIndex()` and `.withSearchIndex()` actually reduce the
-documents scanned.
+Both JavaScript `.filter()` and the Convex query `.filter()` method evaluate the
+predicate per document (scan + evaluate); neither pushes the predicate to
+storage or an index. Use `.withIndex(...)` or `.withSearchIndex(...)` (for text)
+to reduce scanned documents, or narrower/summary tables, before accepting a
+scan-plus-filter pattern.
 
 Prefer:
 
@@ -70,7 +70,7 @@ export const listOpen = query({
 ```
 
 ```ts
-// Also bad: Convex .filter() does not push to storage either
+// Also bad: Convex .filter() scans and evaluates each document; no index push
 export const listOpen = query({
   args: {},
   handler: async (ctx) => {

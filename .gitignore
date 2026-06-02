@@ -50,7 +50,7 @@ nifty500/
 
 # ── Results & recommendations ─────────────────────────────────────────────────
 results/
-recommendations/
+/recommendations/
 backtest_results/
 
 # ── Logs ──────────────────────────────────────────────────────────────────────
