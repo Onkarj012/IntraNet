@@ -1,13 +1,26 @@
-<!-- convex-ai-start -->
+# OptiNet Dashboard
 
-This project uses [Convex](https://convex.dev) as its backend.
+Next.js control room for intraday equity picks, paper ledger, walk-forward validation, and ops monitoring.
 
-When working on Convex code, **always read
-`convex/_generated/ai/guidelines.md` first** for important guidelines on
-how to correctly use Convex APIs and patterns. The file contains rules that
-override what you may have learned about Convex from training data.
+## Run locally
 
-Convex agent skills for common tasks can be installed by running
-`npx convex ai-files install`.
+```bash
+cd dashboard
+npm install
+npm run dev
+```
 
-<!-- convex-ai-end -->
+The dashboard reads artifacts from the parent repo (`results/`, `models/v8_intraday/`) when run locally. Set `REPO_ROOT` if the repo is not one level up from `dashboard/`.
+
+## Hosted mode
+
+When `CONVEX_HTTP_URL` and `DASHBOARD_PUSH_SECRET` are set, artifacts pushed by `scripts/trading/push_dashboard.py` are read over HTTP instead of local files.
+
+## Pages
+
+| Route | Purpose |
+|-------|---------|
+| `/` | Morning brief — equity picks + NIFTY futures signal |
+| `/ledger` | Intraday paper trade ledger + equity curve |
+| `/performance` | Walk-forward validation + regime breakdown |
+| `/ops` | Pipeline status, model health, drift monitor, kill switches |
