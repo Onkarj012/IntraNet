@@ -46,6 +46,7 @@ FEATURE_GROUPS: dict[str, list[str]] = {
         "momentum_5d", "momentum_10d", "momentum_21d",
         "rs_vs_sector_5d", "rs_vs_sector_21d",
         "close_vs_sma_21d", "close_vs_sma_63d",
+        "orb_first_ret", "orb_close_loc",         # Phase A: opening drive direction
     ],
     "reversal": [
         "price_position_20d", "price_position_63d",
@@ -54,6 +55,7 @@ FEATURE_GROUPS: dict[str, list[str]] = {
         "bollinger_position",
         "prev_day_range_pct",
         "parkinson_vol_5d", "gk_vol_5d",
+        "orb_first_ret", "orb_range_pct", "orb_body_ratio",  # Phase A: gap-fill signal
     ],
     "breakout": [
         "vol_contraction_5d", "vol_contraction_21d",
@@ -64,9 +66,32 @@ FEATURE_GROUPS: dict[str, list[str]] = {
         "close_vs_narrow_range",
     ],
     "sentiment": [
-        "sentiment_score_1d", "sentiment_score_3d",
-        "sentiment_momentum_5d", "sentiment_volatility_5d",
-        "article_count_1d", "article_count_3d",
+        # Names from SentimentFeatureBuilder (what intraday_features.py produces)
+        "premarket_sentiment",
+        "premarket_sentiment_count",
+        "premarket_sentiment_max",
+        "premarket_sentiment_std",
+        "sentiment_5d_avg",
+        "sentiment_momentum",
+        "sentiment_spike",
+        "news_volume_shock",
+        "sentiment_surprise",
+        "sentiment_confidence",
+        "sentiment_macro_agreement",
+        "industry_premarket_sentiment",
+        "industry_premarket_sentiment_count",
+        "industry_sentiment_5d_avg",
+        "industry_sentiment_momentum",
+        "industry_news_volume_shock",
+        "industry_sentiment_surprise",
+        "industry_sentiment_stock_divergence",
+        # Per-stock names (from per_stock_sentiment.py, present when live news available)
+        "sentiment_score_1d",
+        "sentiment_score_3d",
+        "sentiment_momentum_5d",
+        "sentiment_volatility_5d",
+        "article_count_1d",
+        "article_count_3d",
         "headline_sentiment_bias",
         "news_to_price_ratio",
     ],
@@ -84,6 +109,20 @@ FEATURE_GROUPS: dict[str, list[str]] = {
         "day_of_week", "month",
         "expiry_week", "budget_day",
         "market_cap_category",
+    ],
+    "mag": [
+        # Return / volatility features used by magnitude regressor
+        "return_1d", "return_5d", "return_10d", "return_21d", "return_63d",
+        "momentum_5d", "momentum_10d", "momentum_21d",
+        "avg_true_range_14d", "atr_percentile",
+        "parkinson_vol_5d", "parkinson_vol_21d",
+        "gk_vol_5d", "gk_vol_21d",
+        "vol_contraction_5d", "vol_contraction_21d",
+        "high_low_range_pct", "prev_day_range_pct",
+        "overnight_return", "gap_size",
+        "orb_first_ret", "orb_range_pct", "orb_body_ratio",
+        "rel_volume_20d", "volume_trend_5d", "volume_dryup_ratio",
+        "bollinger_position", "rsi_14d",
     ],
 }
 
@@ -349,6 +388,7 @@ class MetaEnsemble:
     model_order: list[str] = field(default_factory=lambda: [
         "momentum", "reversal", "breakout", "sentiment", "macro",
     ])
+    meta_model: Optional[object] = None  # LGBMClassifier for meta-labeling
 
     def predict(
         self,
@@ -450,17 +490,30 @@ class MetaEnsemble:
 
         models = {}
         for name in ["momentum", "reversal", "breakout", "sentiment", "macro"]:
-            model_path = dir_path / f"{name}_signal.pkl"
-            if model_path.exists():
-                models[name] = SignalModel.load(model_path)
+            # Try new naming first ({name}_barrier.pkl), then legacy ({name}_signal.pkl)
+            for suffix in [f"{name}_barrier.pkl", f"{name}_signal.pkl"]:
+                model_path = dir_path / suffix
+                if model_path.exists():
+                    models[name] = SignalModel.load(model_path)
+                    break
 
-        weights_path = dir_path / "regime_weights.npy"
+        weights_path = dir_path / "regime_weights_barrier.npy"
+        if not weights_path.exists():
+            weights_path = dir_path / "regime_weights.npy"
         if weights_path.exists():
             regime_weights = np.load(weights_path)
         else:
             regime_weights = DEFAULT_REGIME_WEIGHTS
 
-        return cls(models=models, regime_weights=regime_weights)
+        instance = cls(models=models, regime_weights=regime_weights)
+
+        # Load meta-labeler if present
+        meta_path = dir_path / "meta_model.pkl"
+        if meta_path.exists():
+            with meta_path.open("rb") as f:
+                instance.meta_model = pickle.load(f)
+
+        return instance
 
 
 # Re-export regime weights for convenience

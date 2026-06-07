@@ -1,40 +1,38 @@
 "use client";
-
 import Link from "next/link";
 import { usePathname } from "next/navigation";
 
 const links = [
-  { href: "/", label: "Recommendations", short: "Recos" },
-  { href: "/paper", label: "Paper Trading", short: "Paper" },
-  { href: "/futures", label: "Futures", short: "Futures" },
-  { href: "/equity", label: "Equity", short: "Equity" },
-  { href: "/ops", label: "Operations", short: "Ops" },
+  { href: "/",        label: "Picks"   },
+  { href: "/paper",   label: "Paper"   },
+  { href: "/futures", label: "Futures" },
+  { href: "/equity",  label: "Equity"  },
+  { href: "/ops",     label: "Ops"     },
 ];
 
 export default function Nav() {
-  const pathname = usePathname();
+  const path = usePathname();
   return (
-    <header className="sticky top-0 z-50 border-b border-hair bg-bg/70 backdrop-blur-xl">
-      <div className="mx-auto flex h-16 w-full max-w-[1180px] items-center justify-between px-5 sm:px-6">
-        <Link href="/" className="group flex items-center gap-2.5">
-          <span className="grid h-8 w-8 place-items-center rounded-input bg-accent text-[16px] font-black text-white shadow-[0_0_24px_rgba(110,104,238,0.5)]">
+    <header className="sticky top-0 z-50 border-b border-hair bg-bg">
+      <div className="mx-auto flex h-[60px] max-w-[1200px] items-center justify-between gap-5 px-5">
+        <Link href="/" className="flex items-center gap-2.5 no-underline">
+          <span className="grid h-7 w-7 shrink-0 place-items-center rounded-[4px] bg-accent text-[13px] font-bold text-white">
             O
           </span>
-          <span className="text-[16px] font-bold tracking-[-0.02em] text-ink">
-            OptiNet
-          </span>
+          <span className="text-[15px] font-semibold tracking-[-0.02em] text-ink">OptiNet</span>
         </Link>
 
-        <nav className="absolute left-1/2 hidden -translate-x-1/2 items-center gap-1 rounded-pill border border-hair bg-card/60 p-1 backdrop-blur-md md:flex">
+        <nav className="hidden items-center gap-8 sm:flex">
           {links.map((l) => {
-            const active =
-              l.href === "/" ? pathname === "/" : pathname.startsWith(l.href);
+            const active = l.href === "/" ? path === "/" : path.startsWith(l.href);
             return (
               <Link
                 key={l.href}
                 href={l.href}
-                className={`rounded-pill px-4 py-1.5 text-[13px] font-medium ${
-                  active ? "bg-raised text-ink" : "text-ink-60 hover:text-ink"
+                className={`border-b pb-0.5 text-[14px] font-medium no-underline transition-colors duration-150 ${
+                  active
+                    ? "border-accent text-ink"
+                    : "border-transparent text-muted hover:text-ink"
                 }`}
               >
                 {l.label}
@@ -43,11 +41,11 @@ export default function Nav() {
           })}
         </nav>
 
-        <div className="flex items-center gap-3">
-          <span className="flex items-center gap-1.5 text-[12px] text-ink-60">
-            <span className="h-1.5 w-1.5 rounded-pill bg-up animate-pulse" />
-            <span className="hidden sm:inline">paper trading </span>live
-          </span>
+        <div className="flex shrink-0 items-center gap-2">
+          <span
+            className="h-1.5 w-1.5 rounded-full bg-up"
+            style={{ animation: "dot-pulse 2s ease infinite" }}
+          />
         </div>
       </div>
     </header>

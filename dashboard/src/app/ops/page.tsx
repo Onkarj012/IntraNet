@@ -1,6 +1,6 @@
 import { getOpsPayload } from "@/lib/data";
 import { inr, num, pct } from "@/lib/format";
-import { Panel, SectionLabel, SectionHeading, StatusPill } from "@/components/ui";
+import { Panel, SectionLabel, SectionHeading, StatusPill, HeroPanel, Cmd } from "@/components/ui";
 import KpiCard from "@/components/KpiCard";
 import DataTable, { type Column } from "@/components/DataTable";
 import AutoRefresh from "@/components/AutoRefresh";
@@ -14,16 +14,6 @@ function exitState(code: number | undefined) {
   if (code === 2) return { tone: "warn" as const, label: "soft alert" };
   if (code === 3) return { tone: "down" as const, label: "hard halt" };
   return { tone: "down" as const, label: `failed (rc ${code})` };
-}
-
-function Cmd({ children }: { children: React.ReactNode }) {
-  return (
-    <code className="flex items-center gap-1 rounded-input border border-hair bg-base px-3 py-2 font-mono text-[12px] text-ink">
-      <span className="text-muted">$</span>
-      {children}
-      <span className="cursor-blink ml-0.5 text-accent">▋</span>
-    </code>
-  );
 }
 
 export default async function OpsPage() {
@@ -42,18 +32,17 @@ export default async function OpsPage() {
   ];
 
   return (
-    <div className="space-y-16">
-      {/* ───────── Hero ───────── */}
-      <Panel variant="shell" radius="shell" glow diagonal className="p-6 sm:p-10">
-        <div className="grid items-center gap-10 lg:grid-cols-[1.05fr_0.95fr]">
+    <div className="page-stack-lg">
+      <HeroPanel>
+        <div className="grid items-center gap-10 lg:grid-cols-2">
           <div>
             <SectionLabel>Automation · cron</SectionLabel>
-            <h1 className="mt-4 text-[30px] font-bold leading-[1.06] tracking-[-0.03em] text-ink sm:text-[52px] sm:leading-[1.03]">
+            <h1 className="t-hero mt-4 text-ink">
               Operations
               <br />
               <span className="text-ink-60">on autopilot.</span>
             </h1>
-            <p className="mt-5 max-w-md text-[15px] font-normal leading-relaxed text-ink-60">
+            <p className="mt-5 max-w-md text-[15px] leading-relaxed text-ink-60">
               One cron entrypoint chains the EOD data cache, futures paper ops, and the equity
               momentum recommendations every trading evening. This is the watchtower.
             </p>
@@ -70,8 +59,7 @@ export default async function OpsPage() {
             </div>
           </div>
 
-          {/* schedule + last run card */}
-          <div className="surface rounded-lg p-5 sm:p-6">
+          <div className="card-raised p-5 sm:p-6">
             <div className="flex items-center justify-between">
               <SectionLabel>Cron schedule</SectionLabel>
               {d.cron ? (
@@ -82,17 +70,17 @@ export default async function OpsPage() {
             </div>
             <div className="mt-4 space-y-3">
               {(d.cron?.jobs ?? []).map((j) => (
-                <div key={j.entrypoint} className="rounded-card border border-hair bg-raised/40 p-3.5">
+                <div key={j.entrypoint} className="card-raised p-3.5">
                   <div className="flex items-center justify-between">
                     <span className="text-[13px] text-ink">{j.name}</span>
                     <span className="nums text-[13px] font-semibold text-ink">{j.human}</span>
                   </div>
-                  <p className="mt-1.5 font-mono text-[11px] text-ink-60">{j.entrypoint}</p>
+                  <p className="t-mono mt-1.5 text-ink-60">{j.entrypoint}</p>
                 </div>
               ))}
               {!d.cron && (
                 <p className="text-[12px] text-muted">
-                  Run <span className="font-mono">scripts/trading/install_cron.sh</span> to install.
+                  Run <span className="t-mono">scripts/trading/install_cron.sh</span> to install.
                 </p>
               )}
             </div>
@@ -108,16 +96,15 @@ export default async function OpsPage() {
             </div>
           </div>
         </div>
-      </Panel>
+      </HeroPanel>
 
-      {/* ───────── Pipeline steps ───────── */}
       <section>
         <SectionHeading
           eyebrow="Daily run"
           title="Pipeline steps"
           description="Step exit codes from the most recent run. 0 clean · 2 soft alert (continues) · 3 hard halt (kill-switch)."
         />
-        <Panel variant="shell" radius="shell" className="p-6 sm:p-7">
+        <Panel className="p-6 sm:p-7">
           {run ? (
             <div className="flex flex-col">
               {run.steps.map((s, i) => {
@@ -128,7 +115,7 @@ export default async function OpsPage() {
                     className="flex items-center justify-between border-b border-hair py-4 last:border-0"
                   >
                     <div className="flex items-center gap-3.5">
-                      <span className="grid h-7 w-7 place-items-center rounded-input bg-raised text-[12px] font-semibold text-ink-60">
+                      <span className="grid h-7 w-7 place-items-center rounded-[4px] bg-raised text-[12px] font-semibold text-ink-60">
                         {i + 1}
                       </span>
                       <span className="text-[14px] text-ink">{s.label}</span>
@@ -143,15 +130,14 @@ export default async function OpsPage() {
           ) : (
             <p className="text-[13px] text-muted">
               No run recorded yet. The status file appears after the first cron run (or run{" "}
-              <span className="font-mono">daily_run.py</span> manually).
+              <span className="t-mono">daily_run.py</span> manually).
             </p>
           )}
         </Panel>
       </section>
 
-      {/* ───────── Kite session + Halts ───────── */}
       <section className="grid grid-cols-1 gap-6 lg:grid-cols-2">
-        <Panel radius="lg" className="p-6">
+        <Panel className="p-6">
           <div className="mb-5 flex items-center justify-between">
             <SectionLabel>Kite session · each morning</SectionLabel>
             <StatusPill tone={d.eodFetchedToday ? "up" : "warn"} dot={false}>
@@ -165,7 +151,7 @@ export default async function OpsPage() {
           <Cmd>.venv/bin/python scripts/data/kite_login.py</Cmd>
         </Panel>
 
-        <Panel radius="lg" className="p-6">
+        <Panel className="p-6">
           <div className="mb-5 flex items-center justify-between">
             <SectionLabel>Kill-switch state</SectionLabel>
             <StatusPill tone={anyHalt ? "down" : "up"}>{anyHalt ? "halted" : "all clear"}</StatusPill>
@@ -175,16 +161,16 @@ export default async function OpsPage() {
               { label: "Futures paper", halted: d.halts.futures, file: "results/router_v0/PAPER_TRADING_HALTED" },
               { label: "Equity paper", halted: d.halts.equity, file: "results/equity/EQUITY_PAPER_HALTED" },
             ].map((h) => (
-              <div key={h.label} className="rounded-card border border-hair bg-raised/40 p-3.5">
+              <div key={h.label} className="card-raised p-3.5">
                 <div className="flex items-center justify-between">
                   <span className="text-[13px] text-ink">{h.label}</span>
                   <span className={`flex items-center gap-2 text-[12px] ${h.halted ? "text-down" : "text-up"}`}>
                     {h.halted ? "HARD HALT" : "running"}
-                    <span className={`h-1.5 w-1.5 rounded-pill ${h.halted ? "bg-down" : "bg-up"}`} />
+                    <span className={`h-1.5 w-1.5 rounded-full ${h.halted ? "bg-down" : "bg-up"}`} />
                   </span>
                 </div>
                 {h.halted && (
-                  <p className="mt-2 font-mono text-[11px] text-muted">resume: rm {h.file}</p>
+                  <p className="t-mono mt-2 text-[11px] text-muted">resume: rm {h.file}</p>
                 )}
               </div>
             ))}
@@ -192,7 +178,6 @@ export default async function OpsPage() {
         </Panel>
       </section>
 
-      {/* ───────── Today's futures activity ───────── */}
       <section>
         <SectionHeading eyebrow="Live testing · futures" title="Latest session activity" />
         {d.futuresToday ? (
@@ -211,7 +196,6 @@ export default async function OpsPage() {
         )}
       </section>
 
-      {/* ───────── Equity recommendations ───────── */}
       <section>
         <SectionHeading
           eyebrow="Recommendation engine"
@@ -230,7 +214,7 @@ export default async function OpsPage() {
             ) : undefined
           }
         />
-        <Panel variant="shell" radius="shell" className="p-6 sm:p-7">
+        <Panel className="p-6 sm:p-7">
           {d.picks && d.picks.items.length ? (
             <DataTable columns={pickCols} rows={d.picks.items.map((it, i) => ({ ...it, i: i + 1 }))} />
           ) : (

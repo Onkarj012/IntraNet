@@ -1,38 +1,31 @@
-import { SectionLabel } from "./ui";
+type Tone = "ink" | "up" | "down" | "warn";
+
+const toneColor: Record<Tone, string> = {
+  ink:  "text-ink",
+  up:   "text-up",
+  down: "text-down",
+  warn: "text-warn",
+};
 
 export default function KpiCard({
-  label,
-  value,
-  sub,
-  tone = "ink",
-  accent = false,
+  label, value, sub, tone = "ink", accent = false,
 }: {
-  label: string;
-  value: string;
-  sub?: string;
-  tone?: "ink" | "up" | "down" | "warn";
-  accent?: boolean;
+  label: string; value: string; sub?: string;
+  tone?: Tone; accent?: boolean;
 }) {
-  const valueColor =
-    tone === "up"
-      ? "text-up"
-      : tone === "down"
-        ? "text-down"
-        : tone === "warn"
-          ? "text-warn"
-          : "text-ink";
   return (
-    <div className="surface group relative overflow-hidden rounded-card p-5">
+    <div className="card p-5">
       {accent && (
-        <div className="absolute inset-x-0 top-0 h-px bg-gradient-to-r from-transparent via-accent to-transparent opacity-70" />
+        <div
+          className="pointer-events-none absolute inset-x-0 top-0 h-px rounded-t-[10px] opacity-50"
+          style={{ background: "linear-gradient(90deg, transparent, #0099ff, transparent)" }}
+        />
       )}
-      <SectionLabel>{label}</SectionLabel>
-      <p
-        className={`nums mt-4 text-[24px] font-bold leading-none sm:text-[30px] ${valueColor}`}
-      >
+      <p className="t-label mb-3">{label}</p>
+      <p className={`nums text-[clamp(22px,3vw,28px)] font-bold leading-none ${toneColor[tone]}`}>
         {value}
       </p>
-      {sub && <p className="nums mt-2.5 text-[12px] font-normal text-ink-60">{sub}</p>}
+      {sub && <p className="mt-2 text-[12px] text-muted">{sub}</p>}
     </div>
   );
 }

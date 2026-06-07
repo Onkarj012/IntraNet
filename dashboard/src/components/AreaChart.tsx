@@ -10,7 +10,6 @@ export type Series = {
 
 const W = 1000;
 
-// Catmull-Rom → cubic bezier for smooth, premium curves.
 function smoothPath(pts: { x: number; y: number }[]): string {
   if (pts.length < 2) return pts.length ? `M${pts[0].x},${pts[0].y}` : "";
   let d = `M${pts[0].x.toFixed(2)},${pts[0].y.toFixed(2)}`;
@@ -66,13 +65,13 @@ export default function AreaChart({
     <svg
       viewBox={`0 0 ${W} ${H}`}
       preserveAspectRatio="none"
-      className="edge-fade-x h-full w-full overflow-visible"
+      className="edge-fade h-full w-full overflow-visible"
       style={{ height }}
     >
       <defs>
         {series.map((s, si) => (
           <linearGradient key={si} id={`fill-${si}`} x1="0" y1="0" x2="0" y2="1">
-            <stop offset="0%" stopColor={s.color} stopOpacity="0.30" />
+            <stop offset="0%" stopColor={s.color} stopOpacity="0.28" />
             <stop offset="60%" stopColor={s.color} stopOpacity="0.06" />
             <stop offset="100%" stopColor={s.color} stopOpacity="0" />
           </linearGradient>
@@ -81,11 +80,8 @@ export default function AreaChart({
 
       {showZero && (
         <line
-          x1="0"
-          x2={W}
-          y1={zeroY}
-          y2={zeroY}
-          stroke="rgba(255,255,255,0.14)"
+          x1="0" x2={W} y1={zeroY} y2={zeroY}
+          stroke="rgba(245,245,245,0.12)"
           strokeWidth="1"
           strokeDasharray="3 6"
         />
@@ -98,21 +94,22 @@ export default function AreaChart({
         const base = showZero ? zeroY : H;
         const last = pts[pts.length - 1];
         return (
-          <g key={si} className="reveal">
+          <g key={si}>
             {s.fill && <path d={`${line} L${W},${base} L0,${base} Z`} fill={`url(#fill-${si})`} />}
             <path
               d={line}
               fill="none"
               stroke={s.color}
-              strokeWidth="2.25"
+              strokeWidth="2"
               strokeLinejoin="round"
               strokeLinecap="round"
               vectorEffect="non-scaling-stroke"
+              style={{ filter: s.marker ? "drop-shadow(0 0 6px rgba(0,153,255,0.35))" : undefined }}
             />
             {s.marker && last && (
               <>
-                <circle cx={last.x} cy={last.y} r="9" fill={s.color} opacity="0.18" />
-                <circle cx={last.x} cy={last.y} r="3.5" fill={s.color} stroke="#0b0b0b" strokeWidth="1.5" />
+                <circle cx={last.x} cy={last.y} r="8" fill={s.color} opacity="0.15" />
+                <circle cx={last.x} cy={last.y} r="3" fill={s.color} stroke="#0a0a0a" strokeWidth="1.5" />
               </>
             )}
           </g>

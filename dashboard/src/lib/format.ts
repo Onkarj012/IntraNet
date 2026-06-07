@@ -1,5 +1,13 @@
 // Display formatters (client-safe — no Node imports).
 
+export function priceFmt(
+  v: number | null | undefined,
+  opts: { maxFrac?: number } = {},
+): string {
+  if (v == null || !Number.isFinite(v)) return "—";
+  return `₹${v.toLocaleString("en-IN", { maximumFractionDigits: opts.maxFrac ?? 2 })}`;
+}
+
 export function inr(v: number, opts: { sign?: boolean } = {}): string {
   const sign = opts.sign && v > 0 ? "+" : "";
   const neg = v < 0;

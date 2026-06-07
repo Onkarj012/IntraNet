@@ -1,6 +1,6 @@
 import { getFuturesPayload, getEquityPayload, getOpsPayload } from "@/lib/data";
 import { inr, num, pct } from "@/lib/format";
-import { Panel, SectionLabel, SectionHeading, StatusPill } from "@/components/ui";
+import { Panel, SectionLabel, SectionHeading, StatusPill, HeroPanel } from "@/components/ui";
 import KpiCard from "@/components/KpiCard";
 import AreaChart from "@/components/AreaChart";
 import BarChart from "@/components/BarChart";
@@ -42,18 +42,17 @@ export default async function PaperPage() {
   ];
 
   return (
-    <div className="space-y-16">
-      {/* Hero */}
-      <Panel variant="shell" radius="shell" glow diagonal className="p-6 sm:p-10">
-        <div className="grid items-center gap-10 lg:grid-cols-[1.05fr_0.95fr]">
+    <div className="page-stack-lg">
+      <HeroPanel>
+        <div className="grid items-center gap-10 lg:grid-cols-2">
           <div>
             <SectionLabel>Live paper trading</SectionLabel>
-            <h1 className="mt-4 text-[30px] font-bold leading-[1.06] tracking-[-0.03em] text-ink sm:text-[52px] sm:leading-[1.03]">
+            <h1 className="t-hero mt-4 text-ink">
               Paper trading,
               <br />
               <span className="text-ink-60">measured live.</span>
             </h1>
-            <p className="mt-5 max-w-md text-[15px] font-normal leading-relaxed text-ink-60">
+            <p className="mt-5 max-w-md text-[15px] leading-relaxed text-ink-60">
               Both books trade the day&rsquo;s recommendations against real session data. Tracked
               vs the validated reference; halts protect the run.
             </p>
@@ -74,15 +73,17 @@ export default async function PaperPage() {
             )}
           </div>
 
-          <div className="surface rounded-lg p-5 sm:p-6">
+          <div className="card-raised p-5 sm:p-6">
             <div className="flex items-center justify-between">
               <SectionLabel>Futures · Variant A</SectionLabel>
               <span className="text-[12px] text-ink-60">{d.ledger.nPaper} trades</span>
             </div>
-            <p className={`nums mt-3 text-[40px] font-bold leading-none ${pnlTone(liveEnd)}`}>{inr(liveEnd, { sign: true })}</p>
+            <p className={`nums mt-3 text-[40px] font-bold leading-none ${liveEnd > 0 ? "text-up" : liveEnd < 0 ? "text-down" : "text-ink"}`}>
+              {inr(liveEnd, { sign: true })}
+            </p>
             <p className="nums mt-2 text-[12px] text-ink-60">cumulative net PnL since go-live</p>
             <div className="-mx-1 mt-4">
-              <AreaChart series={[{ points: d.liveCurve, color: "var(--color-accent)", fill: true, marker: true }]} height={120} baselineZero />
+              <AreaChart series={[{ points: d.liveCurve, color: "#0099ff", fill: true, marker: true }]} height={120} baselineZero />
             </div>
             <div className="mt-5 grid grid-cols-3 gap-3 border-t border-hair pt-4">
               {[
@@ -98,9 +99,8 @@ export default async function PaperPage() {
             </div>
           </div>
         </div>
-      </Panel>
+      </HeroPanel>
 
-      {/* Futures live */}
       <section>
         <SectionHeading eyebrow="Futures · live book" title="Variant A — promoted strategy" description="Soft alerts flag drift but never freeze the run; only a hard drawdown halt writes the kill-switch." />
         <div className="grid grid-cols-2 gap-4 md:grid-cols-5">
@@ -112,29 +112,29 @@ export default async function PaperPage() {
         </div>
       </section>
 
-      {/* Variant compare + recent trades */}
       <section className="grid grid-cols-1 gap-6 lg:grid-cols-2">
-        <Panel radius="lg" className="p-6">
+        <Panel className="p-6">
           <SectionLabel className="mb-5">Live book comparison · A vs C</SectionLabel>
           <DataTable
             columns={[
               { key: "v", header: "Book", render: (r: { label: string }) => r.label },
-              { key: "n", header: "Trades", align: "right", render: (r: any) => r.metrics.nTrades },
-              { key: "win", header: "Win", align: "right", render: (r: any) => pct(r.metrics.winRate) },
-              { key: "pnl", header: "PnL", align: "right", render: (r: any) => <span className={r.metrics.totalPnl >= 0 ? "text-up" : "text-down"}>{inr(r.metrics.totalPnl, { sign: true })}</span> },
-              { key: "sh", header: "Sharpe", align: "right", render: (r: any) => num(r.metrics.sharpe) },
-              { key: "pf", header: "PF", align: "right", render: (r: any) => num(r.metrics.profitFactor) },
+              { key: "n", header: "Trades", align: "right", render: (r: { metrics: { nTrades: number } }) => r.metrics.nTrades },
+              { key: "win", header: "Win", align: "right", render: (r: { metrics: { winRate: number } }) => pct(r.metrics.winRate) },
+              { key: "pnl", header: "PnL", align: "right", render: (r: { metrics: { totalPnl: number } }) => (
+                <span className={r.metrics.totalPnl >= 0 ? "text-up" : "text-down"}>{inr(r.metrics.totalPnl, { sign: true })}</span>
+              )},
+              { key: "sh", header: "Sharpe", align: "right", render: (r: { metrics: { sharpe: number | null } }) => num(r.metrics.sharpe) },
+              { key: "pf", header: "PF", align: "right", render: (r: { metrics: { profitFactor: number | null } }) => num(r.metrics.profitFactor) },
             ]}
             rows={d.variants}
           />
         </Panel>
-        <Panel radius="lg" className="p-6">
+        <Panel className="p-6">
           <SectionLabel className="mb-5">Recent futures trades</SectionLabel>
           <DataTable columns={tradeCols} rows={d.recentTrades} />
         </Panel>
       </section>
 
-      {/* Equity paper book */}
       <section>
         <SectionHeading eyebrow="Equity · live book" title="IntradayNet paper book" description={`${eq.stats.nRebalances} rebalances · ${eq.stats.dateMin} → ${eq.stats.dateMax}`} />
         <div className="mb-6 grid grid-cols-2 gap-4 md:grid-cols-4">
@@ -143,24 +143,24 @@ export default async function PaperPage() {
           <KpiCard label="Excess" value={`${eq.stats.excessReturn >= 0 ? "+" : "−"}${Math.abs(eq.stats.excessReturn).toFixed(2)}×`} sub="vs benchmark" tone={eq.stats.excessReturn >= 0 ? "up" : "down"} />
           <KpiCard label="Period win" value={pct(eq.stats.winRate, 0)} sub="net ret > 0" />
         </div>
-        <Panel variant="shell" radius="shell" glow className="mb-6 p-6 sm:p-8">
+        <Panel className="mb-6 p-6 sm:p-8">
           <div className="mb-4 flex items-center justify-between">
             <SectionLabel>Equity curve vs benchmark</SectionLabel>
             <div className="flex items-center gap-5 text-[12px]">
-              <span className="flex items-center gap-2 text-ink"><span className="h-1.5 w-4 rounded-pill bg-accent" /> strategy</span>
-              <span className="flex items-center gap-2 text-ink-60"><span className="h-1.5 w-4 rounded-pill bg-accent-soft" /> benchmark</span>
+              <span className="flex items-center gap-2 text-ink"><span className="h-1.5 w-4 rounded-[4px] bg-accent" /> strategy</span>
+              <span className="flex items-center gap-2 text-ink-60"><span className="h-1.5 w-4 rounded-[4px] bg-accent-soft" /> benchmark</span>
             </div>
           </div>
           <AreaChart
             series={[
-              { points: eq.benchCurve, color: "var(--color-accent-soft)", fill: false },
-              { points: eq.strategyCurve, color: "var(--color-accent)", fill: true, marker: true },
+              { points: eq.benchCurve, color: "rgba(0,153,255,0.45)", fill: false },
+              { points: eq.strategyCurve, color: "#0099ff", fill: true, marker: true },
             ]}
             height={260}
           />
         </Panel>
         <div className="grid grid-cols-1 gap-6 lg:grid-cols-2">
-          <Panel radius="lg" className="p-6">
+          <Panel className="p-6">
             <div className="mb-5 flex items-center justify-between">
               <SectionLabel>Current holdings · weight</SectionLabel>
               <span className="text-[12px] text-ink-60">{eq.latestHoldings.length} names</span>
@@ -171,7 +171,7 @@ export default async function PaperPage() {
               <p className="text-[13px] text-muted">No invested holdings.</p>
             )}
           </Panel>
-          <Panel radius="lg" className="p-6">
+          <Panel className="p-6">
             <SectionLabel className="mb-5">Recent rebalances</SectionLabel>
             <DataTable columns={rebalCols} rows={eq.recent} />
           </Panel>

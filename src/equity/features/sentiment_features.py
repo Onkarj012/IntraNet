@@ -107,6 +107,16 @@ class SentimentFeatureBuilder:
             if not df.empty:
                 df["timestamp"] = pd.to_datetime(df["timestamp"], errors="coerce")
                 df = df[df["timestamp"].notna()].copy()
+                # Compute premarket_trade_date from timestamp if not already correct
+                # Articles published before 09:15 IST → trade_date = same day
+                # Articles published after 09:15 IST (or prev evening) → trade_date = next trading day
+                # Simple rule: if published after 09:15 local → next calendar day
+                if "premarket_trade_date" not in df.columns or df["premarket_trade_date"].isna().all():
+                    ts_ist = df["timestamp"] + pd.Timedelta(hours=5, minutes=30)
+                    same_day = ts_ist.dt.time < pd.Timestamp("09:15").time()
+                    df["premarket_trade_date"] = pd.to_datetime(
+                        ts_ist.dt.normalize().where(same_day, ts_ist.dt.normalize() + pd.Timedelta(days=1))
+                    ).dt.date
             self._data = df
             self._loaded = True
             return

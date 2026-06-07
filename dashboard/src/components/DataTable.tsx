@@ -3,40 +3,34 @@ export type Column<T> = {
   header: string;
   align?: "left" | "right";
   render: (row: T) => React.ReactNode;
-  className?: string;
 };
 
 export default function DataTable<T>({
-  columns,
-  rows,
-  rowKey,
+  columns, rows, rowKey,
 }: {
-  columns: Column<T>[];
-  rows: T[];
-  rowKey?: (row: T) => string;
+  columns: Column<T>[]; rows: T[]; rowKey?: (row: T) => string;
 }) {
-  if (!columns?.length) return null;
-
-  const title = columns[0];
-  const actions = columns.slice(1).filter((c) => c.header === "");
-  const fields = columns.slice(1).filter((c) => c.header !== "");
-  const keyOf = (row: T, i: number) => rowKey?.(row) ?? String(i);
+  if (!columns?.length || !rows?.length) return null;
+  const [first, ...rest] = columns;
+  const fields = rest.filter((c) => c.header !== "");
+  const actions = rest.filter((c) => c.header === "");
+  const key = (row: T, i: number) => rowKey?.(row) ?? String(i);
 
   return (
     <>
-      {/* Mobile: stacked cards */}
-      <div className="flex flex-col gap-3 md:hidden">
+      {/* Mobile — stacked cards */}
+      <div className="flex flex-col gap-2 sm:hidden">
         {rows.map((row, i) => (
-          <div key={keyOf(row, i)} className="rounded-card border border-hair bg-raised/40 p-4">
-            <div className="mb-3 flex items-center justify-between gap-3">
-              <div className="nums text-[15px] font-semibold text-ink">{title.render(row)}</div>
-              <div className="flex items-center gap-3">{actions.map((c) => <span key={c.key}>{c.render(row)}</span>)}</div>
+          <div key={key(row, i)} className="card-raised p-4">
+            <div className="mb-3 flex items-center justify-between">
+              <span className="text-[15px] font-semibold text-ink">{first.render(row)}</span>
+              <div className="flex gap-2">{actions.map((c) => <span key={c.key}>{c.render(row)}</span>)}</div>
             </div>
-            <div className="grid grid-cols-2 gap-x-4 gap-y-3">
+            <div className="grid grid-cols-2 gap-x-5 gap-y-2.5">
               {fields.map((c) => (
-                <div key={c.key} className="flex flex-col gap-1">
-                  <span className="text-[10px] font-semibold uppercase tracking-[1.2px] text-muted">{c.header}</span>
-                  <span className="nums text-[14px] text-ink">{c.render(row)}</span>
+                <div key={c.key}>
+                  <p className="t-label mb-1">{c.header}</p>
+                  <p className="nums text-[13px] text-ink">{c.render(row)}</p>
                 </div>
               ))}
             </div>
@@ -44,15 +38,15 @@ export default function DataTable<T>({
         ))}
       </div>
 
-      {/* Desktop: table */}
-      <div className="hidden w-full overflow-x-auto md:block">
+      {/* Desktop — table */}
+      <div className="hidden overflow-x-auto sm:block">
         <table className="w-full border-collapse text-[13px]">
           <thead>
             <tr>
               {columns.map((c) => (
                 <th
                   key={c.key}
-                  className={`border-b border-line px-3 pb-3 text-[10px] font-semibold uppercase tracking-[1.4px] text-muted ${
+                  className={`whitespace-nowrap border-b border-hair px-3 pb-3 t-label ${
                     c.align === "right" ? "text-right" : "text-left"
                   }`}
                 >
@@ -63,13 +57,13 @@ export default function DataTable<T>({
           </thead>
           <tbody>
             {rows.map((row, i) => (
-              <tr key={keyOf(row, i)} className="group transition-colors hover:bg-raised/50">
+              <tr key={key(row, i)} className="row-hover transition-colors duration-100">
                 {columns.map((c) => (
                   <td
                     key={c.key}
-                    className={`nums border-b border-hair px-3 py-3 ${
+                    className={`nums border-b border-hair px-3 py-3 text-ink ${
                       c.align === "right" ? "text-right" : "text-left"
-                    } ${c.className ?? ""}`}
+                    }`}
                   >
                     {c.render(row)}
                   </td>

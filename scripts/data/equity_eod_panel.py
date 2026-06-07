@@ -44,7 +44,9 @@ def fetch_yf(symbol: str, start: str, end: str) -> pd.DataFrame | None:
     if idx.tz is not None:
         idx = idx.tz_localize(None)
     raw.index = idx.normalize()
-    return raw[["close", "volume"]]
+    # Return OHLCV (open/high/low new; close/volume preserved for backward compat)
+    cols = [c for c in ["open", "high", "low", "close", "volume"] if c in raw.columns]
+    return raw[cols]
 
 
 def fetch_kite(client, symbol: str, start: str, end: str) -> pd.DataFrame | None:
@@ -109,7 +111,9 @@ def main():
         min_rows = 1
         print(f"Update mode: existing through {last.date()}, refetching from {start}")
 
-    closes, vols, yf_fail, kite = {}, {}, [], None
+    OHLCV = ["open", "high", "low", "close", "volume"]
+    raw: dict[str, dict[str, pd.Series]] = {col: {} for col in OHLCV}
+    yf_fail, kite = [], None
     for i, s in enumerate(syms):
         d = _clean(fetch_yf(s, start, end), min_rows)
         if d is None:
@@ -119,22 +123,28 @@ def main():
                 if kite is not None:
                     d = _clean(fetch_kite(kite, s, start, end), min_rows)
         if d is not None:
-            closes[s], vols[s] = d["close"], d["volume"]
+            for col in OHLCV:
+                if col in d.columns:
+                    raw[col][s] = d[col]
         if (i + 1) % 50 == 0:
-            print(f"  {i + 1}/{len(syms)} fetched ({len(closes)} ok, {len(yf_fail)} yf-miss)")
+            print(f"  {i + 1}/{len(syms)} fetched ({len(raw['close'])} ok, {len(yf_fail)} yf-miss)")
         time.sleep(0.05)
 
-    close = pd.DataFrame(closes).sort_index()
-    vol = pd.DataFrame(vols).reindex_like(close)
-    panel = pd.concat({"close": close, "volume": vol}, axis=1)
+    ref_idx = pd.DataFrame(raw["close"]).sort_index().index
+    frames = {col: pd.DataFrame(raw[col]).reindex(ref_idx) for col in OHLCV}
+    panel = pd.concat(frames, axis=1)
 
     if existing is not None:
         if panel.empty:
             print("  Update mode: no new rows fetched — keeping existing panel unchanged.")
             panel = existing
         else:
-            panel = pd.concat({"close": panel.xs("close", axis=1, level=0).combine_first(existing.xs("close", axis=1, level=0)),
-                               "volume": panel.xs("volume", axis=1, level=0).combine_first(existing.xs("volume", axis=1, level=0))}, axis=1)
+            merged = {}
+            for col in OHLCV:
+                new_slice = panel.xs(col, axis=1, level=0) if col in panel.columns.get_level_values(0) else pd.DataFrame()
+                old_slice = existing.xs(col, axis=1, level=0) if col in existing.columns.get_level_values(0) else pd.DataFrame()
+                merged[col] = new_slice.combine_first(old_slice) if not new_slice.empty else old_slice
+            panel = pd.concat(merged, axis=1)
 
     out.parent.mkdir(parents=True, exist_ok=True)
     panel.sort_index().to_parquet(out)

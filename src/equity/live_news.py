@@ -103,6 +103,13 @@ def normalize_historical_sentiment_csv(
         return pd.DataFrame(columns=_article_columns())
 
     df = pd.read_csv(csv_path, parse_dates=["Publish Date"])
+    # Drop shadow lowercase columns that conflict with renamed titlcase ones
+    # (combined_sentiment CSVs have both 'Symbol' and 'symbol' columns)
+    shadow_cols = {"symbol", "timestamp", "score"}
+    title_cols = {"Symbol", "Publish Date", "sentiment_score"}
+    for shadow in shadow_cols:
+        if shadow in df.columns and any(t in df.columns for t in title_cols):
+            df = df.drop(columns=[shadow], errors="ignore")
     df = df.rename(
         columns={
             "Symbol": "symbol",
@@ -111,7 +118,7 @@ def normalize_historical_sentiment_csv(
         }
     )
     if "headline" not in df.columns:
-        df["headline"] = ""
+        df["headline"] = df.get("Headline", "")
     df["symbol"] = df["symbol"].fillna("").astype(str).str.upper().str.replace(".NS", "", regex=False)
     df["score"] = pd.to_numeric(df["score"], errors="coerce").fillna(0.0)
     df["source"] = "historical_csv"

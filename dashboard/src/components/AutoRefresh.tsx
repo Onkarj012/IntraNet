@@ -16,7 +16,6 @@ export default function AutoRefresh({
   const [, force] = useState(0);
 
   useEffect(() => {
-    // re-render the "x ago" label every 10s
     const tick = setInterval(() => force((n) => n + 1), 10_000);
     return () => clearInterval(tick);
   }, []);
@@ -36,26 +35,22 @@ export default function AutoRefresh({
     : "stale";
 
   return (
-    <div className="flex items-center gap-3 text-[12px] text-ink-60">
+    <div className="flex flex-wrap items-center gap-2 text-[12px] text-ink-60">
       <span className="inline-flex items-center gap-1.5">
-        <span
-          className={`h-1.5 w-1.5 rounded-pill ${pending ? "bg-warn" : "bg-up"} ${
-            auto ? "animate-pulse" : ""
-          }`}
-        />
+        <span className={`h-1.5 w-1.5 rounded-full ${pending ? "bg-warn" : "bg-up"} ${auto ? "animate-pulse" : ""}`} />
         updated {agoLabel}
       </span>
       <button
+        type="button"
         onClick={() => setAuto((a) => !a)}
-        className={`rounded-pill border border-hair px-2.5 py-1 ${
-          auto ? "text-ink" : "text-muted"
-        } hover:border-hair-strong`}
+        className={`btn-ghost rounded-[4px] border px-2.5 py-1 ${auto ? "text-ink" : "text-muted"}`}
       >
         auto {auto ? "on" : "off"}
       </button>
       <button
+        type="button"
         onClick={() => startTransition(() => router.refresh())}
-        className="rounded-pill border border-hair px-2.5 py-1 text-ink hover:border-hair-strong"
+        className="btn-ghost rounded-[4px] border px-2.5 py-1 text-ink"
       >
         refresh
       </button>

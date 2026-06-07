@@ -23,6 +23,13 @@ def load_panel(path) -> tuple[pd.DataFrame, pd.DataFrame]:
     return store.xs("close", axis=1, level=0), store.xs("volume", axis=1, level=0)
 
 
+def load_ohlcv(path) -> dict[str, pd.DataFrame]:
+    """Load all available OHLCV frames from the panel. Returns dict keyed by column name."""
+    store = pd.read_parquet(path)
+    cols = store.columns.get_level_values(0).unique()
+    return {c: store.xs(c, axis=1, level=0) for c in ["open", "high", "low", "close", "volume"] if c in cols}
+
+
 def _z(df: pd.DataFrame) -> pd.DataFrame:
     return df.sub(df.mean(axis=1), axis=0).div(df.std(axis=1).replace(0, np.nan), axis=0)
 

@@ -29,6 +29,13 @@ STATIC = [
     "results/daily_run_status.json",
     "results/cron_status.json",
     "results/recommendations.json",
+    # Intraday system artifacts
+    "results/equity/intraday_paper_ledger.csv",
+    "results/equity/walk_forward_results.json",
+    "results/equity/backtest_production_v2.csv",
+    "results/intraday_daily_status.json",
+    "models/v8_intraday/train_meta.json",
+    "models/v8_intraday/exposure_by_regime.json",
 ]
 
 

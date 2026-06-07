@@ -1,6 +1,6 @@
 import { getEquityPayload } from "@/lib/data";
 import { pct } from "@/lib/format";
-import { Panel, SectionLabel, SectionHeading, StatusPill } from "@/components/ui";
+import { Panel, SectionLabel, SectionHeading, StatusPill, HeroPanel } from "@/components/ui";
 import KpiCard from "@/components/KpiCard";
 import AreaChart from "@/components/AreaChart";
 import AutoRefresh from "@/components/AutoRefresh";
@@ -15,18 +15,17 @@ export default async function EquityPage() {
   const invested = d.latest.state === "invested";
 
   return (
-    <div className="space-y-16">
-      {/* ───────── Hero ───────── */}
-      <Panel variant="shell" radius="shell" glow diagonal className="p-6 sm:p-10">
-        <div className="grid items-center gap-10 lg:grid-cols-[1.05fr_0.95fr]">
+    <div className="page-stack-lg">
+      <HeroPanel>
+        <div className="grid items-center gap-10 lg:grid-cols-2">
           <div>
             <SectionLabel>IntradayNet · NSE Nifty 500</SectionLabel>
-            <h1 className="mt-4 text-[30px] font-bold leading-[1.06] tracking-[-0.03em] text-ink sm:text-[52px] sm:leading-[1.03]">
+            <h1 className="t-hero mt-4 text-ink">
               Daily long factor,
               <br />
               <span className="text-ink-60">compounding.</span>
             </h1>
-            <p className="mt-5 max-w-md text-[15px] font-normal leading-relaxed text-ink-60">
+            <p className="mt-5 max-w-md text-[15px] leading-relaxed text-ink-60">
               A diversified 20-name long book rebalanced through risk-on regimes, with a
               risk-off cash state. Tracked against the Nifty 500 benchmark since 2017.
             </p>
@@ -39,8 +38,7 @@ export default async function EquityPage() {
             </div>
           </div>
 
-          {/* snapshot card */}
-          <div className="surface rounded-lg p-5 sm:p-6">
+          <div className="card-raised p-5 sm:p-6">
             <div className="flex items-center justify-between">
               <SectionLabel>Strategy equity</SectionLabel>
               <span className="text-[12px] text-ink-60">{d.stats.nRebalances} rebalances</span>
@@ -50,8 +48,8 @@ export default async function EquityPage() {
             <div className="-mx-1 mt-4">
               <AreaChart
                 series={[
-                  { points: d.benchCurve, color: "var(--color-accent-soft)", fill: false },
-                  { points: d.strategyCurve, color: "var(--color-accent)", fill: true, marker: true },
+                  { points: d.benchCurve, color: "rgba(0,153,255,0.45)", fill: false },
+                  { points: d.strategyCurve, color: "#0099ff", fill: true, marker: true },
                 ]}
                 height={120}
               />
@@ -63,7 +61,9 @@ export default async function EquityPage() {
               </div>
               <div>
                 <SectionLabel>Excess</SectionLabel>
-                <p className={`nums mt-2 text-[18px] font-semibold ${d.stats.excessReturn >= 0 ? "text-up" : "text-down"}`}>{signedMult(d.stats.excessReturn)}</p>
+                <p className={`nums mt-2 text-[18px] font-semibold ${d.stats.excessReturn >= 0 ? "text-up" : "text-down"}`}>
+                  {signedMult(d.stats.excessReturn)}
+                </p>
               </div>
               <div>
                 <SectionLabel>Period win</SectionLabel>
@@ -72,11 +72,14 @@ export default async function EquityPage() {
             </div>
           </div>
         </div>
-      </Panel>
+      </HeroPanel>
 
-      {/* ───────── KPIs ───────── */}
       <section>
-        <SectionHeading eyebrow="Performance" title="Since-inception summary" description={`${d.stats.dateMin} → ${d.stats.dateMax}, ${d.stats.nRebalances} biweekly rebalances.`} />
+        <SectionHeading
+          eyebrow="Performance"
+          title="Since-inception summary"
+          description={`${d.stats.dateMin} → ${d.stats.dateMax}, ${d.stats.nRebalances} biweekly rebalances.`}
+        />
         <div className="grid grid-cols-2 gap-4 md:grid-cols-3 lg:grid-cols-6">
           <KpiCard label="Strategy equity" value={mult(d.latest.equity)} sub={`from ${d.stats.dateMin}`} tone="up" accent />
           <KpiCard label="Benchmark" value={mult(d.latest.benchEquity)} sub="Nifty 500" />
@@ -87,23 +90,22 @@ export default async function EquityPage() {
         </div>
       </section>
 
-      {/* ───────── Curve ───────── */}
       <section>
-        <Panel variant="shell" radius="shell" glow className="p-6 sm:p-8">
+        <Panel className="p-6 sm:p-8">
           <div className="mb-5 flex flex-wrap items-end justify-between gap-3">
             <div>
               <SectionLabel>Equity curve vs benchmark</SectionLabel>
-              <p className="mt-2 text-[15px] font-normal text-ink-60">Growth of ₹1 · log-scale not applied</p>
+              <p className="mt-2 text-[15px] text-ink-60">Growth of ₹1 · log-scale not applied</p>
             </div>
             <div className="flex items-center gap-5 text-[12px]">
-              <span className="flex items-center gap-2 text-ink"><span className="h-1.5 w-4 rounded-pill bg-accent" /> strategy</span>
-              <span className="flex items-center gap-2 text-ink-60"><span className="h-1.5 w-4 rounded-pill bg-accent-soft" /> benchmark</span>
+              <span className="flex items-center gap-2 text-ink"><span className="h-1.5 w-4 rounded-[4px] bg-accent" /> strategy</span>
+              <span className="flex items-center gap-2 text-ink-60"><span className="h-1.5 w-4 rounded-[4px] bg-accent-soft" /> benchmark</span>
             </div>
           </div>
           <AreaChart
             series={[
-              { points: d.benchCurve, color: "var(--color-accent-soft)", fill: false },
-              { points: d.strategyCurve, color: "var(--color-accent)", fill: true, marker: true },
+              { points: d.benchCurve, color: "rgba(0,153,255,0.45)", fill: false },
+              { points: d.strategyCurve, color: "#0099ff", fill: true, marker: true },
             ]}
             height={300}
           />
