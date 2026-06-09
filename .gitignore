@@ -84,3 +84,6 @@ htmlcov/
 *.tmp
 *.bak
 flags/
+
+# reference/
+

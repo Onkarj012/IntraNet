@@ -1,157 +1,127 @@
-@import "tailwindcss";
+@import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500&family=Fragment+Mono:ital@0;1&display=swap');
 
-/* ───────────────────────── Ovalux design tokens ─────────────────────────
-   Reverse-engineered from the reference HTML (token usage frequency):
-   - #5d5aa3 muted purple is the DOMINANT accent (558×) — borders/glows/series
-   - #6e68ee bright indigo is reserved for primary CTAs / selection only
-   - near-black surface ladder; green/red/amber on DATA only
-   - radii: 4 chips · 12 cards · 16 large · 32 section shells · 500 pills */
-@theme {
-  /* Surfaces (deepest → lighter) */
-  --color-bg: #030303;
-  --color-base: #080808;
-  --color-surface: #0b0b0b;
-  --color-panel: #0f0f0f;
-  --color-card: #141414;
-  --color-raised: #171717;
-  --color-mid: #2e2e2e;
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
 
-  /* Text */
-  --color-ink: #ffffff;
-  --color-ink-85: rgba(255, 255, 255, 0.85);
-  --color-ink-60: rgba(255, 255, 255, 0.6);
-  --color-muted: #8a8a8a;
+:root {
+  --bg-page:    #070707;
+  --bg-surface: #0f0f0f;
+  --bg-glass:   rgba(255, 255, 255, 0.05);
 
-  /* Hairlines / borders */
-  --color-hair: rgba(255, 255, 255, 0.07);
-  --color-line: rgba(255, 255, 255, 0.12);
-  --color-hair-strong: rgba(255, 255, 255, 0.2);
+  --text-primary:   #f2f2f2;
+  --text-secondary: #969696;
+  --text-muted:     rgba(255, 255, 255, 0.35);
 
-  /* Brand (violet family) */
-  --color-accent: #6e68ee;        /* CTAs / primary only */
-  --color-accent-soft: #5d5aa3;   /* dominant muted purple */
-  --color-violet: #9768ed;
-  --color-blueviolet: #588bb8;
+  --accent:      #f24100;
+  --accent-dark: #54220f;
 
-  /* Semantic / data colors (finance) — data only */
-  --color-up: #22cb58;
-  --color-down: #ff5e5d;
-  --color-warn: #ffbc4f;
+  --win:  #22c55e;
+  --loss: #ef4444;
+  --warn: #f59e0b;
+  --halt: #7f1d1d;
 
-  /* Radii */
-  --radius-chip: 4px;
-  --radius-input: 8px;
-  --radius-card: 12px;
-  --radius-lg: 16px;
-  --radius-shell: 32px;
-  --radius-pill: 500px;
+  --border:        1px dashed rgba(255, 255, 255, 0.1);
+  --border-solid:  1px solid rgba(255, 255, 255, 0.1);
+  --border-hover:  rgba(255, 255, 255, 0.2);
 
-  --font-sans: var(--font-inter), ui-sans-serif, system-ui, -apple-system, "Segoe UI",
-    Roboto, Helvetica, Arial, sans-serif;
+  --font-ui:   'Inter', system-ui, sans-serif;
+  --font-mono: 'Fragment Mono', 'IBM Plex Mono', monospace;
 
-  --ease-ovalux: cubic-bezier(0.25, 0.75, 0.25, 1);
-  --animate-diag: moveDiagonalLines 0.7s linear infinite;
+  --radius-sm: 4px;
+  --radius-md: 8px;
+  --radius-lg: 12px;
 }
 
-@keyframes moveDiagonalLines {
-  0% { background-position: 0 0; }
-  100% { background-position: 22px 22px; }
-}
-@keyframes cursor-blink { 0%, 100% { opacity: 1; } 50% { opacity: 0; } }
-@keyframes bar-grow { 0% { transform: scaleX(0); } 100% { transform: scaleX(1); } }
-@keyframes fade-up {
-  0% { opacity: 0; transform: translate3d(0, 12px, 0); }
-  100% { opacity: 1; transform: translate3d(0, 0, 0); }
-}
+* { box-sizing: border-box; margin: 0; padding: 0; }
 
-/* ───────────────────────── base ───────────────────────── */
-html { background: var(--color-bg); color-scheme: dark; }
 body {
-  background: var(--color-bg);
-  color: var(--color-ink-85);
-  font-family: var(--font-sans);
+  background: var(--bg-page);
+  color: var(--text-primary);
+  font-family: var(--font-ui);
   font-size: 14px;
-  font-weight: 500;
-  line-height: 1;
-  letter-spacing: 0;
+  font-weight: 400;
   -webkit-font-smoothing: antialiased;
-  text-rendering: optimizeLegibility;
-}
-::selection { background-color: var(--color-accent); color: #fff; }
-::-webkit-scrollbar { width: 11px; height: 11px; }
-::-webkit-scrollbar-thumb {
-  background: var(--color-mid);
-  border-radius: var(--radius-pill);
-  border: 3px solid var(--color-bg);
 }
 
-/* ───────────────────────── signature utilities ───────────────────────── */
+.mono { font-family: var(--font-mono) !important; }
 
-/* tracked-out uppercase eyebrow */
-.eyebrow {
-  text-transform: uppercase;
-  letter-spacing: 1.8px;
+.card {
+  background: var(--bg-surface);
+  border: 1px dashed rgba(255,255,255,0.1);
+  border-radius: var(--radius-lg);
+  padding: 24px;
+  transition: border-color 0.15s, background 0.15s;
+}
+.card:hover {
+  border-color: rgba(255,255,255,0.2);
+  background: rgba(255,255,255,0.02);
+}
+
+.metric-card {
+  background: var(--bg-surface);
+  border-radius: var(--radius-md);
+  padding: 16px;
+}
+
+.pill {
+  display: inline-flex;
+  align-items: center;
+  padding: 3px 10px;
+  border-radius: 9999px;
   font-size: 11px;
-  font-weight: 600;
-  color: var(--color-muted);
+  font-weight: 500;
+  font-family: var(--font-mono);
+  white-space: nowrap;
 }
 
-/* the polished card surface: hairline + soft stacked shadow */
-.surface {
-  background: var(--color-card);
-  border: 1px solid var(--color-hair);
-  box-shadow:
-    rgba(0, 0, 0, 0.17) 0 0.6px 1.57px -1.5px,
-    rgba(0, 0, 0, 0.14) 0 2.29px 5.95px -3px,
-    rgba(0, 0, 0, 0.2) 0 10px 26px -4.5px;
+.pill-live    { background: #f24100; color: #fff; }
+.pill-win     { background: rgba(34,197,94,0.15); color: #22c55e; border: 1px solid rgba(34,197,94,0.3); }
+.pill-loss    { background: rgba(239,68,68,0.15); color: #ef4444; border: 1px solid rgba(239,68,68,0.3); }
+.pill-stop    { background: rgba(245,158,11,0.15); color: #f59e0b; border: 1px solid rgba(245,158,11,0.3); }
+.pill-halt    { background: rgba(127,29,19,0.3); color: #fca5a5; }
+.pill-regime-trending  { background: rgba(34,197,94,0.15); color: #22c55e; border: 1px solid rgba(34,197,94,0.3); }
+.pill-regime-choppy    { background: rgba(245,158,11,0.15); color: #f59e0b; border: 1px solid rgba(245,158,11,0.3); }
+.pill-regime-crisis    { background: rgba(239,68,68,0.15); color: #ef4444; border: 1px solid rgba(239,68,68,0.3); }
+.pill-regime-neutral   { background: rgba(150,150,150,0.15); color: #969696; border: 1px solid rgba(150,150,150,0.3); }
+
+@keyframes pulse-dot {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.3; }
 }
+.pulse { animation: pulse-dot 1.4s ease-in-out infinite; }
 
-/* big section shell — translucent, feels like a glass slab */
-.shell {
-  background:
-    linear-gradient(180deg, rgba(255, 255, 255, 0.025), rgba(255, 255, 255, 0)) ,
-    var(--color-panel);
-  border: 1px solid var(--color-hair);
+@keyframes blink {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0; }
 }
+.cursor-blink { animation: blink 1s step-end infinite; }
 
-/* animated diagonal "data motion" hatch — subtle, behind hero/charts */
-.diagonal-lines {
-  background-image: repeating-linear-gradient(
-    -45deg,
-    rgba(93, 90, 163, 0.10) 0,
-    rgba(93, 90, 163, 0.10) 1px,
-    transparent 1px,
-    transparent 11px
-  );
-  background-size: 22px 22px;
-  animation: var(--animate-diag);
+/* Table styles */
+.trade-table { width: 100%; border-collapse: collapse; }
+.trade-table th {
+  background: var(--bg-surface);
+  color: var(--text-secondary);
+  font-size: 11px;
+  font-weight: 400;
+  text-align: left;
+  padding: 10px 12px;
+  position: sticky;
+  top: 0;
+  z-index: 1;
+  white-space: nowrap;
+  border-bottom: 1px solid rgba(255,255,255,0.06);
 }
-
-/* purple→blue glow used behind hero and key charts */
-.glow-violet {
-  background: radial-gradient(
-    60% 60% at 50% 40%,
-    rgba(110, 104, 238, 0.20) 0%,
-    rgba(93, 90, 163, 0.10) 40%,
-    rgba(0, 0, 0, 0) 75%
-  );
-  filter: blur(10px);
+.trade-table td {
+  padding: 9px 12px;
+  font-size: 12px;
+  border-bottom: 1px solid rgba(255,255,255,0.04);
+  white-space: nowrap;
 }
+.trade-table tr:nth-child(even) td { background: rgba(255,255,255,0.01); }
+.trade-table tr:hover td { background: rgba(255,255,255,0.03); }
 
-/* feather edges into the background */
-.edge-fade-x {
-  -webkit-mask-image: linear-gradient(to right, transparent, #000 5%, #000 95%, transparent);
-  mask-image: linear-gradient(to right, transparent, #000 5%, #000 95%, transparent);
-}
-
-.cursor-blink { animation: cursor-blink 0.8s steps(1) infinite; }
-.reveal { animation: fade-up 0.55s var(--ease-ovalux) both; }
-.bar-grow { transform-origin: left; animation: bar-grow 0.7s var(--ease-ovalux) both; }
-
-/* numeric display face */
-.nums { font-variant-numeric: tabular-nums; letter-spacing: -0.01em; }
-
-a, button, .interactive {
-  transition: color 0.2s ease, background-color 0.2s ease,
-    border-color 0.2s ease, opacity 0.2s ease, transform 0.2s ease;
-}
+/* Scrollbar */
+::-webkit-scrollbar { width: 4px; height: 4px; }
+::-webkit-scrollbar-track { background: transparent; }
+::-webkit-scrollbar-thumb { background: rgba(255,255,255,0.1); border-radius: 2px; }
