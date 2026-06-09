@@ -1,0 +1,7 @@
+{
+  "crons": [
+    { "path": "/api/run/preopen",  "schedule": "0 3 * * 1-5" },
+    { "path": "/api/run/postopen", "schedule": "52 3 * * 1-5" },
+    { "path": "/api/run/eod",      "schedule": "5 10 * * 1-5" }
+  ]
+}

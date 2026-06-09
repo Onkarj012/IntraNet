@@ -402,7 +402,7 @@ def drift():
     }
 
 
-@app.post("/api/run/{mode}")
+@app.api_route("/api/run/{mode}", methods=["GET", "POST"])
 async def run_mode(mode: str, background_tasks: BackgroundTasks):
     """Manually trigger preopen / postopen / eod pipeline."""
     if mode not in ("preopen", "postopen", "eod"):
