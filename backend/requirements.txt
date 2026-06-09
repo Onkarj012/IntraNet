@@ -6,7 +6,7 @@ lightgbm==4.6.0
 scikit-learn==1.7.2
 yfinance==0.2.65
 pandas-datareader==0.10.0
-pandas_ta==0.3.14b0
+pandas_ta==0.4.71b0
 pyarrow==20.0.0
 requests==2.32.4
 feedparser==6.0.11
