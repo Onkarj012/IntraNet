@@ -1,0 +1,14 @@
+fastapi==0.115.12
+uvicorn[standard]==0.35.0
+pandas==2.3.3
+numpy==1.26.4
+lightgbm==4.6.0
+scikit-learn==1.7.2
+yfinance==0.2.65
+pandas-datareader==0.10.0
+pandas_ta==0.3.14b0
+pyarrow==20.0.0
+requests==2.32.4
+feedparser==6.0.11
+python-dateutil==2.9.0
+pytz==2025.2

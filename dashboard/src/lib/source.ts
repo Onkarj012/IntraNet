@@ -1,8 +1,7 @@
-// Pluggable data source.
-//   - Local dev (no CONVEX_HTTP_URL): read the repo's files/dirs directly.
-//   - Hosted (CONVEX_HTTP_URL set):   read artifacts pushed to Convex over HTTP.
-// Everything downstream (CSV parsing, metrics) is identical for both modes —
-// only the raw-bytes source changes here.
+// Pluggable data source — three modes:
+//   1. Local dev (no env vars):  read repo files directly
+//   2. FastAPI  (NEXT_PUBLIC_API_URL set): fetch from FastAPI backend
+//   3. Convex   (CONVEX_HTTP_URL set):    read blobs pushed to Convex
 import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -24,17 +23,46 @@ function resolveRepoRoot(): string {
 
 const REPO_ROOT = resolveRepoRoot();
 
-// e.g. https://<deployment>.convex.site  (HTTP-action origin, not .convex.cloud)
+// FastAPI backend URL (takes priority over Convex if set)
+const API_URL = (
+  process.env.NEXT_PUBLIC_API_URL ?? process.env.API_URL
+)?.replace(/\/$/, "");
+
+// Convex fallback
 const CONVEX = (
   process.env.CONVEX_HTTP_URL ?? process.env.NEXT_PUBLIC_CONVEX_SITE_URL
 )?.replace(/\/$/, "");
-// Server-only on Vercel (never NEXT_PUBLIC_* — do not expose to the browser).
+
 const READ_SECRET =
   process.env.DASHBOARD_PUSH_SECRET?.trim() ||
   process.env.PUSH_SECRET?.trim() ||
   "";
 
-export const CLOUD = !!CONVEX;
+export const CLOUD = !!(API_URL || CONVEX);
+
+// ── FastAPI key → endpoint map ───────────────────────────────────────────
+const API_ROUTE: Record<string, string> = {
+  "results/recommendations.json":              "/api/recommendations",
+  "results/equity/intraday_paper_ledger.csv":  "/api/ledger",
+  "results/intraday_daily_status.json":        "/api/status",
+  "results/equity/walk_forward_results.json":  "/api/walk-forward",
+  "models/v8_intraday/exposure_by_regime.json":"/api/regime",
+  "models/v8_intraday/train_meta.json":        "/api/train-meta",
+  "@drift":                                    "/api/drift",
+};
+
+async function apiText(key: string): Promise<string | null> {
+  if (!API_URL) return null;
+  const route = API_ROUTE[key];
+  if (!route) return null;
+  try {
+    const r = await fetch(`${API_URL}${route}`, { cache: "no-store" });
+    if (!r.ok) return null;
+    return await r.text();
+  } catch {
+    return null;
+  }
+}
 
 export type ConvexProbe = "ok" | "no-secret" | "unauthorized" | "missing" | "offline";
 
@@ -147,5 +175,7 @@ export const PUSH_KEYS = [
 ];
 
 export async function srcText(key: string): Promise<string | null> {
-  return CONVEX ? convexText(key) : localText(key);
+  if (API_URL) return apiText(key);
+  if (CONVEX) return convexText(key);
+  return localText(key);
 }
